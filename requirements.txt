@@ -1,0 +1,12 @@
+# Pathcaster runtime deps for the `cf` venv (Python 3.12). Run setup_env.ps1 instead of
+# installing by hand: on Windows-on-ARM64, cflib must be installed with --no-deps because
+# libusb-package has no ARM64 wheel (shims/libusb_package stands in for it), and OpenCV
+# has no ARM64 wheel at all (see setup_cv_env.ps1 / the cf64 venv).
+bleak>=3.0
+numpy
+scipy
+pyusb
+pyyaml
+packaging
+cflib            # ARM64: pip install --no-deps cflib
+# opencv-contrib-python   # x64 only

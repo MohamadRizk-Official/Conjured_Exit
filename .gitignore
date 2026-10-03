@@ -218,3 +218,19 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ---------------------------------------------------------------- Pathcaster
+# virtual envs (setup_env.ps1 -> cf, setup_cv_env.ps1 -> cf64)
+cf/
+cf64/
+# cflib TOC cache, benchmark/flight run outputs, camera calibration (rig-specific)
+cache/
+results/
+calib/*.npz
+# frontend
+ui/web/node_modules/
+!ui/web/dist/
+# team-internal planning notes are shared out of band, not through this repo
+CLAUDE.md
+TASKS.md
+docs/
