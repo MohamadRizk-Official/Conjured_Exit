@@ -19,6 +19,7 @@ export default function Controls({ state, send }) {
   const paths = s.paths || [];
   const flight = s.flight?.state || 'idle';
   const airborne = ['takeoff', 'flying', 'landing'].includes(flight);
+  const armed = !!s.flight?.armed;
 
   const saveAs = () => {
     const n = name.trim();
@@ -30,7 +31,16 @@ export default function Controls({ state, send }) {
   return (
     <aside className="controls">
       <button
-        className="btn alarm"
+        className={`btn arm ${armed ? 'on' : 'off'}`}
+        onClick={() => send('arm', { on: !armed })}
+        title="Motors can only start while armed. Arming clears itself after every landing or stop."
+      >
+        {armed ? 'ARMED' : 'DISARMED'}
+        <small>{armed ? 'ready to fly - click to disarm' : 'click to arm before ALARM / Cast'}</small>
+      </button>
+
+      <button
+        className={`btn alarm ${armed ? '' : 'disarmed'}`}
         onClick={() => send('alarm')}
         title="Guide mode: take off and fly the open exit route (voice: 'fire' / 'lead me out')"
       >
@@ -95,7 +105,7 @@ export default function Controls({ state, send }) {
                   <button className="btn small" disabled={active} onClick={() => send('select_path', { name: p.name })}>
                     {active ? 'Selected' : 'Select'}
                   </button>
-                  <button className="btn small cast" onClick={() => send('cast', { name: p.name })}>
+                  <button className={`btn small cast ${armed ? '' : 'disarmed'}`} onClick={() => send('cast', { name: p.name })}>
                     Cast
                   </button>
                 </div>

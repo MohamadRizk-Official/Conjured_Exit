@@ -33,41 +33,45 @@ log = logging.getLogger("hover")
 
 
 class SupervisorWatch:
-    """Tiny pre-flight log block (supervisor bits + battery); stopped before takeoff."""
+    """Tiny pre-flight log block (supervisor bits + battery); stopped before takeoff, restarted after."""
 
     def __init__(self, cf) -> None:
         self.cf = cf
         self.info = None
         self.vbat = None
         self.conf = None
+        self.running = False
 
     def start(self) -> None:
-        conf = flight.make_log_config("pre", 100)
-        alias = {}
-        for name, fetch_as in (("supervisor.info", "uint16_t"), ("pm.vbat", "FP16")):
-            seen = resolve(self.cf.log.toc, name)
-            conf.add_variable(seen, fetch_as)
-            alias[seen] = name
+        if self.conf is None:
+            conf = flight.make_log_config("pre", 100)
+            alias = {}
+            for name, fetch_as in (("supervisor.info", "uint16_t"), ("pm.vbat", "FP16")):
+                seen = resolve(self.cf.log.toc, name)
+                conf.add_variable(seen, fetch_as)
+                alias[seen] = name
 
-        def on_data(_ts, data, _lc):
-            d = {alias.get(k, k): v for k, v in data.items()}
-            if "supervisor.info" in d:
-                self.info = int(d["supervisor.info"])
-            if "pm.vbat" in d:
-                self.vbat = float(d["pm.vbat"])
+            def on_data(_ts, data, _lc):
+                d = {alias.get(k, k): v for k, v in data.items()}
+                if "supervisor.info" in d:
+                    self.info = int(d["supervisor.info"])
+                if "pm.vbat" in d:
+                    self.vbat = float(d["pm.vbat"])
 
-        conf.data_received_cb.add_callback(on_data)
-        self.cf.log.add_config(conf)
-        conf.start()
-        self.conf = conf
+            conf.data_received_cb.add_callback(on_data)
+            self.cf.log.add_config(conf)
+            self.conf = conf
+        if not self.running:
+            self.conf.start()
+            self.running = True
 
     def stop(self) -> None:
-        if self.conf is not None:
+        if self.conf is not None and self.running:
             try:
                 self.conf.stop()
             except Exception:  # noqa: BLE001
                 pass
-            self.conf = None
+            self.running = False
 
     def line(self) -> str:
         return f"bat {self.vbat if self.vbat is None else f'{self.vbat:.2f} V'}  supervisor[" \
@@ -151,35 +155,7 @@ def run_sequence(cf, tracker, fl: flight.Flight, pf: feed.PositionFeed, *, hold_
     return 0
 
 
-class _FakeCF:
-    """Stand-in for --dry-run: records setpoints, no link."""
-
-    class _Commander:
-        def __init__(self):
-            self.n = 0
-            self.stops = 0
-
-        def send_position_setpoint(self, x, y, z, yaw):
-            self.n += 1
-
-        def send_stop_setpoint(self):
-            self.stops += 1
-
-        def send_notify_setpoint_stop(self):
-            pass
-
-    class _Any:
-        def __getattr__(self, _name):
-            return lambda *a, **k: None
-
-    def __init__(self):
-        self.commander = self._Commander()
-        self.loc = self._Any()
-        self.extpos = self._Any()
-        self.platform = self._Any()
-        self.param = self._Any()
-        self.param.toc = {"stabilizer": {"estimator": 143}, "kalman": {"resetEstimation": 116},
-                          "locSrv": {"extPosStdDev": 107}}
+_FakeCF = flight.FakeCrazyflie      # the dry-run drone lives in flight.py now (shared with mission_sim/tests)
 
 
 def main() -> None:

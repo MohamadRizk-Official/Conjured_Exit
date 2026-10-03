@@ -470,6 +470,61 @@ class Flight:
         return th
 
 
+# --------------------------------------------------------------------------- fakes
+class FakeCrazyflie:
+    """Stand-in for a cflib Crazyflie with no link: counts setpoints, swallows everything else.
+
+    Used by ``hover.py --dry-run``, ``mission.py --sim`` (through ``mission_sim.SimDrone``) and tests.
+    ``param.toc`` / ``log.toc`` hold the names the flight code resolves with ``toc_names.resolve``.
+    """
+
+    TOC = {
+        "stabilizer": {"estimator": 143, "roll": 1, "pitch": 2},
+        "kalman": {"resetEstimation": 116, "stateX": 3, "stateY": 4, "stateZ": 5, "varPX": 6, "varPY": 7, "varPZ": 8},
+        "locSrv": {"extPosStdDev": 107, "extQuatStdDev": 108},
+        "pm": {"vbat": 9},
+        "supervisor": {"info": 10},
+    }
+
+    class _Commander:
+        def __init__(self) -> None:
+            self.n = 0
+            self.stops = 0
+            self.notify_stops = 0
+            self.last = None
+
+        def send_position_setpoint(self, x, y, z, yaw):
+            self.n += 1
+            self.last = (x, y, z, yaw)
+
+        def send_stop_setpoint(self):
+            self.stops += 1
+
+        def send_notify_setpoint_stop(self, remain_valid_milliseconds=0):
+            self.notify_stops += 1
+
+    class _Any:
+        """Any attribute not set explicitly is a no-op method."""
+
+        def __init__(self, **attrs) -> None:
+            self.__dict__.update(attrs)
+
+        def __getattr__(self, _name):
+            return lambda *a, **k: None
+
+    def __init__(self) -> None:
+        self.commander = self._Commander()
+        self.loc = self._Any()
+        self.extpos = self._Any()
+        self.platform = self._Any()
+        self.supervisor = self._Any()
+        self.param = self._Any(toc={k: dict(v) for k, v in self.TOC.items()})
+        self.log = self._Any(toc={k: dict(v) for k, v in self.TOC.items()})
+
+    def close_link(self) -> None:
+        pass
+
+
 # --------------------------------------------------------------------------- link lifecycle
 def disable_link_pinger(cf) -> None:
     """cflib >= 0.1.34 pings the link-echo channel at 10 Hz after connecting (LinkStatistics).

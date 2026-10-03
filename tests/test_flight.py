@@ -396,5 +396,24 @@ class FeedTests(unittest.TestCase):
         self.assertEqual(pf.skipped, 1)
 
 
+class FakeCrazyflieTests(unittest.TestCase):
+    def test_flight_runs_against_fake_crazyflie(self):
+        clock = FakeClock()
+        cf = flight.FakeCrazyflie()
+        fl = Flight(cf, FlightConfig(takeoff_time_s=1.0, hover_time_s=0.5, land_time_s=1.0),
+                    telemetry=converged_telemetry(), clock=clock, sleep=clock.sleep)
+        fl.setup_estimator()                          # resolves names through the fake TOC
+        self.assertTrue(fl.takeoff())
+        fl.land()
+        self.assertGreater(cf.commander.n, 20)
+        self.assertGreaterEqual(cf.commander.stops, 1)
+        self.assertEqual(cf.commander.last[2] if cf.commander.last else None, cf.commander.last[2])
+        self.assertEqual(fl.state, "idle")
+        self.assertIsInstance(cf.log.toc, dict)
+        self.assertIn("supervisor", cf.log.toc)
+        cf.close_link()                               # no-op, must exist
+        cf.platform.send_crash_recovery_request()     # any method is a no-op
+
+
 if __name__ == "__main__":
     unittest.main()

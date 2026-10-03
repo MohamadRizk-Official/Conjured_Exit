@@ -1,5 +1,6 @@
 """hover.run_sequence against fakes: locks tracker, converges, takes off, holds, lands."""
 import unittest
+from unittest import mock
 
 import feed
 import flight
@@ -69,6 +70,42 @@ class HoverSequenceTests(unittest.TestCase):
                                 clock=clock, sleep=clock.sleep, ext_std=None)
         self.assertEqual(rc, 1)
         self.assertEqual(cf.commander.setpoints, [])
+
+
+class _FakeConf:
+    def __init__(self):
+        self.vars = []
+        self.started = 0
+        self.stopped = 0
+        self.data_received_cb = mock.Mock()
+
+    def add_variable(self, name, fetch_as):
+        self.vars.append((name, fetch_as))
+
+    def start(self):
+        self.started += 1
+
+    def stop(self):
+        self.stopped += 1
+
+
+class SupervisorWatchTests(unittest.TestCase):
+    def test_restart_reuses_the_same_log_block(self):
+        cf = flight.FakeCrazyflie()
+        cf.log.add_config = mock.Mock()
+        conf = _FakeConf()
+        with mock.patch("hover.flight.make_log_config", return_value=conf) as mk:
+            sw = hover.SupervisorWatch(cf)
+            sw.start()
+            sw.stop()
+            sw.start()
+            sw.stop()
+        self.assertEqual(mk.call_count, 1)
+        self.assertEqual(cf.log.add_config.call_count, 1)
+        self.assertEqual(conf.started, 2)
+        self.assertEqual(conf.stopped, 2)
+        self.assertFalse(sw.running)
+        self.assertEqual([v[0] for v in conf.vars], ["supervisor.info", "pm.vbat"])
 
 
 if __name__ == "__main__":

@@ -51,7 +51,7 @@ DEMO_NAMES = {"spiral", "square", "exit_a", "exit_b"}
 
 def _sample_args(name: str) -> dict:
     required, _ = COMMAND_SPECS[name]
-    samples = {"mode": "spell", "name": "spiral", "exit": "A", "source": "sim"}
+    samples = {"mode": "spell", "name": "spiral", "exit": "A", "source": "sim", "on": True}
     return {a: samples[a] for a in required}
 
 
@@ -429,6 +429,15 @@ class CommandQueueTests(unittest.TestCase):
 # ------------------------------------------------------------------ simulator
 
 
+class AsBoolTests(unittest.TestCase):
+    def test_strings_and_values(self):
+        from ui.state import as_bool
+        for v in (True, 1, "1", "true", "True", " on ", "yes", "armed"):
+            self.assertTrue(as_bool(v), v)
+        for v in (False, 0, "0", "false", "off", "no", "", None):
+            self.assertFalse(as_bool(v), v)
+
+
 class SimulatorTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -452,6 +461,7 @@ class SimulatorTests(unittest.TestCase):
         self.assertEqual(s["active_path"], "exit_a")
 
     def test_alarm_flies_exit_a_then_reroutes_to_b(self):
+        self.q.push("arm", {"on": True})
         self.q.push("alarm")
         self.run_for(0.2)
         s = self.bus.snapshot_dict()
@@ -498,6 +508,7 @@ class SimulatorTests(unittest.TestCase):
         self.assertGreater(len(saved.points), 2)
 
     def test_stop_and_clear(self):
+        self.q.push("arm", {"on": True})
         self.q.push("cast", {"name": "spiral"})
         self.run_for(2.0)
         self.q.push("stop")
@@ -508,6 +519,48 @@ class SimulatorTests(unittest.TestCase):
         s = self.bus.snapshot_dict()
         self.assertEqual(s["flight"]["state"], "idle")
         self.assertFalse(s["alarm"]["active"])
+
+    def test_alarm_refused_while_disarmed(self):
+        self.q.push("alarm")
+        self.run_for(0.2)
+        s = self.bus.snapshot_dict()
+        self.assertEqual(s["flight"]["state"], "idle")
+        self.assertFalse(s["alarm"]["active"])
+        self.assertFalse(s["flight"]["armed"])
+        self.assertTrue(any("disarmed" in line for line in s["log"]))
+
+    def test_cast_refused_while_disarmed(self):
+        self.q.push("cast", {"name": "spiral"})
+        self.run_for(0.2)
+        self.assertEqual(self.bus.snapshot_dict()["flight"]["state"], "idle")
+
+    def test_arm_then_alarm_disarms_after_landing(self):
+        self.q.push("arm", {"on": True})
+        self.run_for(0.1)
+        self.assertTrue(self.bus.snapshot_dict()["flight"]["armed"])
+        self.q.push("alarm")
+        self.run_for(0.2)
+        self.assertEqual(self.bus.snapshot_dict()["flight"]["state"], "takeoff")
+        self.run_for(40.0)  # takeoff + exit_a + landing
+        s = self.bus.snapshot_dict()
+        self.assertEqual(s["flight"]["state"], "idle")
+        self.assertFalse(s["flight"]["armed"])
+
+    def test_stop_disarms(self):
+        self.q.push("arm", {"on": True})
+        self.q.push("cast", {"name": "spiral"})
+        self.run_for(1.0)
+        self.q.push("stop")
+        self.run_for(0.1)
+        s = self.bus.snapshot_dict()
+        self.assertEqual(s["flight"]["state"], "estop")
+        self.assertFalse(s["flight"]["armed"])
+
+    def test_arm_accepts_string_false(self):
+        self.q.push("arm", {"on": True})
+        self.q.push("arm", {"on": "false"})
+        self.run_for(0.1)
+        self.assertFalse(self.bus.snapshot_dict()["flight"]["armed"])
 
 
 # ---------------------------------------------------------------- live bridge
@@ -645,7 +698,7 @@ class LiveBridgeTests(unittest.TestCase):
         self.assertEqual(s["drone"], {"x": 0.1, "y": -0.2, "z": 0.3, "yaw": 0.0})
         self.assertAlmostEqual(s["link"]["battery_v"], 3.87)
         self.assertTrue(s["link"]["connected"])
-        self.assertEqual(s["flight"], {"state": "idle", "estimator_converged": True})
+        self.assertEqual(s["flight"], {"state": "idle", "estimator_converged": True, "armed": False})
 
     def test_stop_command_calls_emergency_stop(self):
         bus, q, cf, fl, bridge, calls = self.make()
@@ -883,7 +936,7 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(set(snap["recording"]), {"active", "mode", "n_samples", "live_points"})
         self.assertEqual(set(snap["replay"]), {"active", "t", "duration", "progress"})
         self.assertEqual(set(snap["alarm"]), {"active", "exit", "blocked_exits"})
-        self.assertEqual(set(snap["flight"]), {"state", "estimator_converged"})
+        self.assertEqual(set(snap["flight"]), {"state", "estimator_converged", "armed"})
         self.assertEqual({p["name"] for p in snap["paths"]}, DEMO_NAMES)
 
     def test_config(self):

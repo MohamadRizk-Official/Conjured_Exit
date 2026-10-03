@@ -787,3 +787,29 @@ body,
     font-size: 16px;
   }
 }
+
+/* arming */
+.btn.arm {
+  width: 100%;
+  margin-bottom: 10px;
+  font-size: 1.3rem;
+  letter-spacing: 0.12em;
+  padding: 14px 16px;
+  border-width: 3px;
+}
+.btn.arm.off {
+  background: #2a2a2a;
+  color: #bbb;
+  border-color: #666;
+}
+.btn.arm.on {
+  background: var(--bad);
+  color: #fff;
+  border-color: #ff7a7a;
+  animation: pulse-red 1.2s infinite;
+}
+.btn.alarm.disarmed,
+.btn.cast.disarmed {
+  opacity: 0.55;
+  filter: saturate(0.5);
+}

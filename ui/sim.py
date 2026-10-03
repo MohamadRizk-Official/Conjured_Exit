@@ -30,7 +30,7 @@ import numpy as np
 import config
 from paths import Path, clean_path
 from ui.pathstore import PathStore
-from ui.state import LIVE_POINTS_MAX, MODES, CommandQueue, StateBus
+from ui.state import LIVE_POINTS_MAX, MODES, CommandQueue, StateBus, as_bool
 
 __all__ = ["Simulator"]
 
@@ -97,6 +97,7 @@ class Simulator(threading.Thread):
         self.converged_at = 2.0
         self.mode = "guide"
         self.active_path: str | None = None
+        self.armed = False
 
     # ----------------------------------------------------------------- control
 
@@ -186,7 +187,13 @@ class Simulator(threading.Thread):
                 return
             self.active_path = self.store.get(pname).name
             self.bus.log(f"{tag}selected {self.active_path}")
+        elif name == "arm":
+            self.armed = as_bool(args.get("on", True))
+            self.bus.log(f"{tag}{'ARMED - ready to fly' if self.armed else 'disarmed'}")
         elif name == "alarm":
+            if not self.armed:
+                self.bus.log(f"{tag}{name} refused: disarmed (arm first)")
+                return
             self.mode = "guide"
             self.alarm_active = True
             self.alarm_exit = self._open_exit()
@@ -197,6 +204,9 @@ class Simulator(threading.Thread):
             self.bus.log(f"{tag}ALARM: leading out via exit {self.alarm_exit} ({path.name})")
             self._start_flight(path)
         elif name == "cast":
+            if not self.armed:
+                self.bus.log(f"{tag}{name} refused: disarmed (arm first)")
+                return
             pname = str(args.get("name", ""))
             path = self.store.get(pname)
             if path is None:
@@ -229,6 +239,7 @@ class Simulator(threading.Thread):
                 self.bus.log(f"{tag}land: not flying")
         elif name == "stop":
             self.phase = "estop"
+            self.armed = False
             self.bus.log(f"{tag}EMERGENCY STOP (motors off)")
         elif name == "clear_alarm":
             self.alarm_active = False
@@ -340,6 +351,7 @@ class Simulator(threading.Thread):
                     self.bus.log(f"flying {self.path.name}")
                 else:
                     self.phase = "idle"
+                    self.armed = False
                     self.bus.log("landed")
         elif self.phase == "flying" and self.path is not None:
             self.replay_t += dt
@@ -435,5 +447,6 @@ class Simulator(threading.Thread):
                 "progress": round(rt / duration, 4) if duration > 0 else 0.0,
             },
             alarm={"active": self.alarm_active, "exit": self.alarm_exit, "blocked_exits": list(self.blocked)},
-            flight={"state": flight_state, "estimator_converged": self.t > self.converged_at and self.phase != "estop"},
+            flight={"state": flight_state, "estimator_converged": self.t > self.converged_at and self.phase != "estop",
+                    "armed": self.armed},
         )

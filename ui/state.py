@@ -113,10 +113,20 @@ COMMAND_SPECS: dict[str, tuple[tuple[str, ...], str]] = {
     "land": ((), "controlled landing"),
     "stop": ((), "EMERGENCY STOP: motors off immediately"),
     "clear_alarm": ((), "reset alarm, blocked exits and e-stop; back to idle"),
+    "arm": (("on",), "arm (true) or disarm (false) the drone; alarm/cast fly only while armed"),
     "select_path": (("name",), "highlight / preview a stored path without flying"),
     "set_source": (("source",), "feed the UI from 'sim' (fake drone) or 'live' (real link); 'none' = nobody"),
 }
 COMMAND_NAMES: tuple[str, ...] = tuple(COMMAND_SPECS)
+
+
+def as_bool(value: Any) -> bool:
+    """Coerce a command argument to bool: bools/numbers as usual; strings 'true/1/yes/on/armed' are True."""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on", "armed")
+    return bool(value)
 
 
 # ------------------------------------------------------------------- state model
@@ -191,6 +201,7 @@ class Alarm:
 class Flight:
     state: str = "idle"
     estimator_converged: bool = False
+    armed: bool = False
 
 
 @dataclass
