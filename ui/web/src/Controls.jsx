@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import VoiceBar from './VoiceBar.jsx';
 
 function Section({ title, children, className = '' }) {
   return (
@@ -32,11 +33,13 @@ export default function Controls({ state, send }) {
       <button
         className="btn alarm"
         onClick={() => send('alarm')}
-        title="Guide mode: take off and fly the open exit route (voice: 'fire' / 'lead me out')"
+        title="Guide mode: take off and fly the open exit route (voice: 'evacuate')"
       >
         <span className="alarm-icon">!</span> ALARM
-        <small>{alarm.active ? `active - exit ${alarm.exit}` : 'lead me out'}</small>
+        <small>{alarm.active ? `active - exit ${alarm.exit}` : 'say "evacuate"'}</small>
       </button>
+
+      <VoiceBar send={send} paths={paths} />
 
       <Section title="Mode">
         <div className="segmented">
@@ -114,7 +117,7 @@ export default function Controls({ state, send }) {
                 key={ex}
                 className={`btn exit ${isBlocked ? 'blocked' : ''}`}
                 onClick={() => send('exit_blocked', { exit: ex })}
-                title={`Voice: "Exit ${ex} is blocked"`}
+                title={`Voice: "Exit ${ex === 'A' ? 'alpha' : 'bravo'} blocked"`}
               >
                 Exit {ex} {isBlocked ? 'BLOCKED' : 'blocked'}
               </button>

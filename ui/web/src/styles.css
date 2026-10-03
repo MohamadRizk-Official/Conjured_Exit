@@ -787,3 +787,61 @@ body,
     font-size: 16px;
   }
 }
+
+/* ------------------------------------------------------------- voice */
+.voice .btn.mic {
+  flex: 1;
+}
+
+.voice .btn.mic.on {
+  background: var(--bad);
+  border-color: var(--bad);
+  color: #fff;
+}
+
+.voice .transcript {
+  margin: 0 0 10px;
+  font-size: 1rem;
+  min-height: 1.4em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice .transcript .final {
+  color: var(--text);
+}
+
+.voice .transcript .interim {
+  color: var(--muted);
+}
+
+.voice-chip {
+  margin: 0 0 10px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  background: #253044;
+  border-left: 6px solid var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-chip.ack {
+  border-left-color: var(--ok);
+}
+
+.voice-chip.error {
+  border-left-color: var(--bad);
+  background: #2a1515;
+}
+
+.voice-chip.ignored {
+  border-left-color: var(--warn);
+}
+
+.voice .row .text {
+  flex: 1;
+}

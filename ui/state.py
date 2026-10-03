@@ -21,13 +21,13 @@ the voice module push exactly these; the flight/engine loop pops them.  Voice
 and AI never touch motors directly: a command only *selects* a path or an
 action, and everything flies through the geofence + safety layer.
 
-    alarm          {}                      Guide mode "fire" / "lead me out": take off and
+    alarm          {}                      Guide mode (voice "evacuate"): take off and
                                            fly the active exit route (Exit A unless blocked).
     set_mode       {"mode": "guide"|"spell"}
     record_start   {}                      start recording (drone in guide, wand tip in spell)
     record_stop    {}                      stop recording; keep the raw samples for save_as
     save_as        {"name": str}           clean the last recording and save it as <name>
-    cast           {"name": str}           fly the stored path <name> (spell "cast <name>")
+    cast           {"name": str}           fly the stored path <name> (voice "launch <name>")
     exit_blocked   {"exit": "A"|"B"}       voice "Exit A is blocked": reroute to the other exit
     land           {}                      controlled landing
     stop           {}                      EMERGENCY STOP (motors off)
@@ -103,7 +103,7 @@ LOG_MAX: int = 50
 
 #: name -> (argument names, one-line description).  Single source of truth for the vocabulary.
 COMMAND_SPECS: dict[str, tuple[tuple[str, ...], str]] = {
-    "alarm": ((), "take off and fly the active exit route (voice: 'fire', 'lead me out')"),
+    "alarm": ((), "take off and fly the active exit route (voice: 'evacuate')"),
     "set_mode": (("mode",), "switch the engine between 'guide' and 'spell'"),
     "record_start": ((), "start recording the drone (guide) or the wand tip (spell)"),
     "record_stop": ((), "stop recording and keep the raw samples"),

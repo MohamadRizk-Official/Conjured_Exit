@@ -10,6 +10,8 @@ export function useSocket() {
   const [connected, setConnected] = useState(false);
   const [lastMsgAt, setLastMsgAt] = useState(0);
   const wsRef = useRef(null);
+  // The server answers commands in order, so each ack/error settles the oldest pending send.
+  const pendingRef = useRef([]);
 
   useEffect(() => {
     let alive = true;
@@ -35,13 +37,17 @@ export function useSocket() {
         if (msg.type === 'state') {
           setState(msg.state);
           setLastMsgAt(Date.now());
+        } else if (msg.type === 'ack') {
+          pendingRef.current.shift()?.resolve(msg);
         } else if (msg.type === 'error') {
           console.warn('[ws] server error:', msg.error);
+          pendingRef.current.shift()?.reject(new Error(msg.error));
         }
       };
       ws.onclose = () => {
         setConnected(false);
         wsRef.current = null;
+        for (const p of pendingRef.current.splice(0)) p.reject(new Error('connection lost'));
         if (alive) {
           timer = setTimeout(connect, retry);
           retry = Math.min(retry * 1.7, 3000);
@@ -79,17 +85,26 @@ export function useSocket() {
     };
   }, []);
 
-  const send = useCallback((name, args = {}) => {
+  // Returns a promise that resolves on the server's ack and rejects on its error.
+  // Callers that do not care can ignore it.
+  const send = useCallback((name, args = {}, source = 'ui') => {
     const ws = wsRef.current;
     if (ws && ws.readyState === 1) {
-      ws.send(JSON.stringify({ type: 'command', name, args }));
-      return;
+      const reply = new Promise((resolve, reject) => pendingRef.current.push({ resolve, reject }));
+      reply.catch(() => {}); // unobserved rejections are fine
+      ws.send(JSON.stringify({ type: 'command', name, args, source }));
+      return reply;
     }
-    fetch('/api/command', {
+    const reply = fetch('/api/command', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, args }),
-    }).catch((e) => console.warn('[cmd] failed', e));
+      body: JSON.stringify({ name, args, source }),
+    }).then(async (r) => {
+      if (!r.ok) throw new Error((await r.json().catch(() => null))?.detail || `HTTP ${r.status}`);
+      return r.json();
+    });
+    reply.catch((e) => console.warn('[cmd] failed', e));
+    return reply;
   }, []);
 
   return { state, connected, lastMsgAt, send };
