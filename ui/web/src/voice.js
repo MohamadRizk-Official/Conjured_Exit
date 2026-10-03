@@ -3,7 +3,10 @@
 // Phrases are deliberately uncommon so normal talking during the pitch does not
 // trigger anything, and no phrase contains another phrase's trigger word.
 //
-//   abort / halt               -> stop            (sent instantly, even mid-sentence)
+// Voice abort is a controlled landing, not the motor kill: a misheard word must
+// never drop the drone. The kill switch stays on Space / Esc / the STOP button.
+//
+//   abort / halt               -> land            (sent instantly, even mid-sentence)
 //   evacuate                   -> alarm
 //   begin recording            -> record_start
 //   end recording              -> record_stop
@@ -70,7 +73,7 @@ export function matchPathName(spoken, paths = []) {
 
 // Speech recognisers mishear some phrases the same way every time; accept those too.
 const RULES = [
-  { re: ABORT_RE, cmd: () => ({ name: 'stop', args: {} }) },
+  { re: ABORT_RE, cmd: () => ({ name: 'land', args: {} }) },
   { re: /\bevacuate\b/, cmd: () => ({ name: 'alarm', args: {} }) },
   { re: /\bbegin recording\b/, cmd: () => ({ name: 'record_start', args: {} }) },
   { re: /\b(end|and) recording\b/, cmd: () => ({ name: 'record_stop', args: {} }) },
@@ -90,6 +93,25 @@ export function parseCommand(text, paths = []) {
   for (const rule of RULES) {
     const m = t.match(rule.re);
     if (m) return rule.cmd(m, paths);
+  }
+  return null;
+}
+
+// Catches commands the backend would accept and then quietly drop (it only logs
+// the failure). Returns a reason string, or null if the command can go.
+// Landing is never blocked: the page's view of the flight state may be stale.
+export function precheck(cmd, state) {
+  const s = state || {};
+  if (cmd.name === 'cast') {
+    const names = (s.paths || []).map((p) => p.name);
+    if (!names.includes(cmd.args.name)) {
+      return names.length ? `no saved path "${cmd.args.name}"` : 'no saved paths yet';
+    }
+  }
+  if (cmd.name === 'save_as') {
+    const rec = s.recording || {};
+    if (rec.active) return 'say "end recording" first';
+    if (!(rec.n_samples > 1)) return 'nothing recorded yet';
   }
   return null;
 }
@@ -155,7 +177,7 @@ export class VoiceListener {
       // Abort skips the confidence check and does not wait for the sentence to end.
       if (!this.abortFired.has(i) && isAbort(heard)) {
         this.abortFired.add(i);
-        this.cb.onCommand?.({ cmd: { name: 'stop', args: {} }, heard, confidence });
+        this.cb.onCommand?.({ cmd: { name: 'land', args: {} }, heard, confidence });
       }
 
       if (!r.isFinal) {

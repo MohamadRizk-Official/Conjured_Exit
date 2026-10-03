@@ -1,14 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { VoiceListener, parseCommand, speechSupported } from './voice.js';
+import { VoiceListener, parseCommand, precheck, speechSupported } from './voice.js';
 
 const describe = (cmd) => [cmd.name, cmd.args?.name, cmd.args?.exit, cmd.args?.mode].filter(Boolean).join(' ');
 
 /**
  * Voice panel: mic toggle, hold-V push-to-talk, live transcript, last-command
- * chip (green on ack, red on error) and a typed fallback for a noisy room.
- * Voice commands go through the same `send` as the buttons, tagged source 'voice'.
+ * chip (green on ack, red on error or a failed precheck) and a typed fallback
+ * for a noisy room. Voice commands go through the same `send` as the buttons,
+ * tagged source 'voice'.
  */
-export default function VoiceBar({ send, paths = [] }) {
+export default function VoiceBar({ send, state }) {
+  const paths = state?.paths || [];
   const [listening, setListening] = useState(false);
   const [interim, setInterim] = useState('');
   const [final, setFinal] = useState('');
@@ -16,15 +18,22 @@ export default function VoiceBar({ send, paths = [] }) {
   const [typed, setTyped] = useState('');
   const listener = useRef(null);
   const pathsRef = useRef(paths);
+  const stateRef = useRef(state);
   const sendRef = useRef(send);
   const pttActive = useRef(false);
   const seq = useRef(0);
   pathsRef.current = paths;
+  stateRef.current = state;
   sendRef.current = send;
 
   const dispatch = (cmd, heard) => {
     const id = ++seq.current;
     const text = `${describe(cmd)} ← "${heard.trim()}"`;
+    const problem = precheck(cmd, stateRef.current);
+    if (problem) {
+      setChip({ id, text: `${text}: ${problem}`, status: 'error' });
+      return;
+    }
     const settle = (status) => setChip((c) => (c && c.id === id ? { ...c, status } : c));
     setChip({ id, text, status: 'sent' });
     Promise.resolve(sendRef.current(cmd.name, cmd.args, 'voice')).then(

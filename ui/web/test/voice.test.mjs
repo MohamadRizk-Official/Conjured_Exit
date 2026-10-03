@@ -1,13 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseCommand, isAbort, matchPathName, VoiceListener } from '../src/voice.js';
+import { parseCommand, isAbort, matchPathName, precheck, VoiceListener } from '../src/voice.js';
 
 const paths = [{ name: 'exit_alpha' }, { name: 'exit_bravo' }, { name: 'spiral' }];
 const cmd = (t) => parseCommand(t, paths);
 
 test('every phrase maps to the right command', () => {
-  assert.deepEqual(cmd('Abort!'), { name: 'stop', args: {} });
-  assert.deepEqual(cmd('halt'), { name: 'stop', args: {} });
+  assert.deepEqual(cmd('Abort!'), { name: 'land', args: {} });
+  assert.deepEqual(cmd('halt'), { name: 'land', args: {} });
   assert.deepEqual(cmd('Evacuate.'), { name: 'alarm', args: {} });
   assert.deepEqual(cmd('begin recording'), { name: 'record_start', args: {} });
   assert.deepEqual(cmd('End recording'), { name: 'record_stop', args: {} });
@@ -74,20 +74,20 @@ function makeListener() {
   return { l, sent, ignored };
 }
 
-test('abort fires once from interim, not again on final', () => {
+test('abort lands: fires once from interim, not again on final', () => {
   const { l, sent } = makeListener();
   const r0 = result('abort', 0, false);
   l.handleResult({ resultIndex: 0, results: [r0] });
   l.handleResult({ resultIndex: 0, results: [result('abort the', 0, false)] });
   l.handleResult({ resultIndex: 0, results: [result('abort the flight', 0.9, true)] });
-  assert.deepEqual(sent, ['stop']);
+  assert.deepEqual(sent, ['land']);
 });
 
 test('low confidence commands are ignored, abort is not', () => {
   const { l, sent, ignored } = makeListener();
   l.handleResult({ resultIndex: 0, results: [result('evacuate', 0.4, true)] });
   l.handleResult({ resultIndex: 1, results: [null, result('halt', 0.2, true)] });
-  assert.deepEqual(sent, ['stop']);
+  assert.deepEqual(sent, ['land']);
   assert.deepEqual(ignored, ['low confidence']);
 });
 
@@ -97,4 +97,22 @@ test('interim commands other than abort wait for the final result', () => {
   assert.deepEqual(sent, []);
   l.handleResult({ resultIndex: 0, results: [result('evacuate', 0.85, true)] });
   assert.deepEqual(sent, ['alarm']);
+});
+
+test('voice never sends the motor kill', () => {
+  for (const s of ['abort', 'halt', 'abort abort', 'halt the drone']) {
+    assert.notEqual(cmd(s).name, 'stop', s);
+  }
+});
+
+test('precheck blocks commands the backend would drop', () => {
+  const state = { paths, recording: { active: false, n_samples: 0 } };
+  assert.equal(precheck({ name: 'cast', args: { name: 'spiral' } }, state), null);
+  assert.match(precheck({ name: 'cast', args: { name: 'zigzag' } }, state), /no saved path "zigzag"/);
+  assert.equal(precheck({ name: 'cast', args: { name: 'x' } }, {}), 'no saved paths yet');
+  assert.equal(precheck({ name: 'save_as', args: { name: 'a' } }, state), 'nothing recorded yet');
+  assert.match(precheck({ name: 'save_as', args: { name: 'a' } }, { recording: { active: true, n_samples: 50 } }), /end recording/);
+  assert.equal(precheck({ name: 'save_as', args: { name: 'a' } }, { recording: { active: false, n_samples: 50 } }), null);
+  // landing is never blocked, whatever the page thinks the flight state is
+  assert.equal(precheck({ name: 'land', args: {} }, { flight: { state: 'idle' } }), null);
 });

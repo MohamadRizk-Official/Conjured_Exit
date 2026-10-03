@@ -39,7 +39,7 @@ export default function Controls({ state, send }) {
         <small>{alarm.active ? `active - exit ${alarm.exit}` : 'say "evacuate"'}</small>
       </button>
 
-      <VoiceBar send={send} paths={paths} />
+      <VoiceBar send={send} state={state} />
 
       <Section title="Mode">
         <div className="segmented">
