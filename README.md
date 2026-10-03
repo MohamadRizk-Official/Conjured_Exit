@@ -75,7 +75,15 @@ Only one process may hold the drone's Bluetooth link at a time. Stop every other
 connecting. The first connect takes about 50 s over BLE (parameter table download).
 
 ```powershell
-# operator UI, hardware-free simulator (demo paths, fake drone): http://127.0.0.1:8765/
+# the whole system without hardware: fake drone that follows its setpoints, demo paths, the page on
+# http://127.0.0.1:8765/ . Click ARMED, then ALARM or Cast; "Exit A blocked" mid-flight lands and relaunches exit B.
+.\cf64\Scripts\python.exe mission.py --sim
+
+# the same engine on the real drone (serves the page itself; nobody else may hold the link)
+.\cf64\Scripts\python.exe mission.py --tracker sim                 # motors-off link test, fake positions
+.\cf64\Scripts\python.exe mission.py --tracker aruco --camera N    # camera tracking, flights when ARMED
+
+# operator UI alone, hardware-free simulator (demo paths, scripted fake drone)
 .\cf64\Scripts\python.exe -m ui.server --sim
 
 # UI with the real drone: SIM/LIVE toggle on the page; LIVE shows battery, position estimate,
@@ -113,7 +121,7 @@ It locks the tracker, streams positions, resets the estimator and waits for conv
 emergency stop, `l` lands now, and it lands by itself if the camera loses the drone for 0.3 s.
 `--tracker sim --dry-run` exercises the whole sequence without hardware.
 
-Tests (221, no hardware needed):
+Tests (267, no hardware needed):
 
 ```powershell
 .\cf64\Scripts\python.exe -m unittest discover -s tests
@@ -132,6 +140,7 @@ Tests (221, no hardware needed):
 | `flight.py` | `Flight`: takeoff/land ramps, path following, geofence, tracking-lost landing, emergency stop, one log block |
 | `paths.py` | `PathRecorder`, `clean_path`, geofence `Box`, JSON save/load, demo paths |
 | `hop.py`, `hover.py` | first flight (barometer hop) and the autonomous hover sequence |
+| `mission.py`, `mission_sim.py` | the mission app: ARMED gate, record/save/replay, alarm and reroute, pre-flight gate, serves the page; sim stand-ins |
 | `ui/` | FastAPI backend (`ui.server`), state bus and command queue (`ui.state`), simulator, live bridge, React page (`ui/web`) |
 | `tools/` | BLE diagnostics, connection-interval probe, camera probe, OpenCV speed check, HSV tuner |
 | `shims/` | `libusb_package` stand-in so cflib imports on Windows ARM64 |
@@ -196,10 +205,11 @@ Rules that keep the one battery and the few spare propellers alive:
 Done: BLE benchmark and driver (hardware acceptance passed), tracker code and calibration tools,
 flight layer, path engine, UI with simulator and live telemetry, first motorised flight (barometer
 hop, caught by hand as expected without position input), autonomous hover sequence tested against
-fakes and in dry run.
+fakes and in dry run, the mission app (`mission.py`: ARMED gate, record / save / replay, alarm,
+land-then-relaunch reroute, pre-flight checks) verified end to end in simulation.
 
-Open: camera calibration on the rig, first autonomous hover on hardware, the mission app that ties
-record / save / replay / alarm / reroute to the UI, voice commands in the browser, the demo.
+Open: camera calibration on the rig, first autonomous hover on hardware, the mission app on the real
+link and camera, voice commands in the browser, the demo.
 
 ## License
 
