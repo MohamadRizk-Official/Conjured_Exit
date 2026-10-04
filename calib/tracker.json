@@ -1,0 +1,67 @@
+{
+  "camera_indices": [
+    0,
+    1
+  ],
+  "backend": "MSMF",
+  "width": 1280,
+  "height": 720,
+  "fps": 30,
+  "colors": {
+    "nose": {
+      "lo": [
+        170,
+        100,
+        80
+      ],
+      "hi": [
+        10,
+        255,
+        255
+      ]
+    },
+    "tail": {
+      "lo": [
+        100,
+        100,
+        80
+      ],
+      "hi": [
+        130,
+        255,
+        255
+      ]
+    },
+    "wand": {
+      "lo": [
+        45,
+        80,
+        80
+      ],
+      "hi": [
+        80,
+        255,
+        255
+      ]
+    }
+  },
+  "min_area": 30,
+  "open_kernel": 3,
+  "aruco_dict": "DICT_4X4_50",
+  "aruco_id": 0,
+  "marker_size_m": 0.15,
+  "drone_marker_id": 1,
+  "drone_marker_size_m": 0.05,
+  "wand_marker_id": 2,
+  "wand_marker_size_m": 0.05,
+  "aruco_camera": 1,
+  "aruco_corner_refine": "SUBPIX",
+  "board": "9x6",
+  "square_m": 0.024,
+  "max_jump_m": 0.5,
+  "max_reproj_px": 8.0,
+  "reacquire_after": 10,
+  "lost_after_s": 0.3,
+  "max_sync_s": 0.06,
+  "calib_dir": "calib"
+}

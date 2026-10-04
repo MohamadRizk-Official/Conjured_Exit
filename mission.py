@@ -43,11 +43,14 @@ class MissionConfig:
     publish_hz: float = 20.0
     record_hz: float = 30.0
     relaunch_delay_s: float = 2.0          # touchdown -> relaunch on the other exit
+    hover_height_m: float = 0.6            # 'hover' command defaults (page button: 0.6 m, 8 s)
+    hover_hold_s: float = 8.0
     agree_tol_m: float = 0.2               # estimator vs camera before takeoff
     min_battery_v: float = 3.7
     ext_std: Optional[float] = 0.05        # locSrv.extPosStdDev; None = leave the drone's value
     converge_retry_s: float = 5.0          # one estimator reset + wait when the estimate disagrees
     feed_status_every_s: float = 10.0      # log feed.status() this often
+    allow_flights: bool = True             # False: real link + fake tracker -> arming never flies
 
 
 def exit_letter(path_name: str) -> Optional[str]:
@@ -55,6 +58,14 @@ def exit_letter(path_name: str) -> Optional[str]:
         if path_name == name:
             return letter
     return None
+
+
+@dataclass
+class HoverPlan:
+    """A hover test: straight up to height_m, hold for seconds, land. Flown by Mission._worker like a path."""
+
+    height_m: float
+    seconds: float
 
 
 class RouteRecorder:
@@ -156,6 +167,8 @@ def preflight(m) -> Optional[str]:
     """
     if not m.armed:
         return "disarmed"
+    if not m.cfg.allow_flights:
+        return "flights disabled (fake tracker on the real link)"
     if m.link_lost:
         return "link lost"
     st = m.tracker.get_state()
@@ -391,6 +404,8 @@ class Mission:
                     self.bus.log(f"{tag}recording stopped: {self.rec.n} samples")
             elif name == "save_as":
                 self._cmd_save_as(args, tag)
+            elif name == "hover":
+                self._cmd_hover(args, tag)
             elif name == "cast":
                 p = self.store.get(str(args.get("name", "")))
                 if p is None:
@@ -476,6 +491,21 @@ class Mission:
                 return ex
         return "A"
 
+    def _cmd_hover(self, args: dict, tag: str) -> None:
+        if not self.armed:
+            self.bus.log(f"{tag}hover refused: disarmed (arm first)")
+            return
+        try:
+            height = float(args.get("height_m", self.cfg.hover_height_m))
+            seconds = float(args.get("seconds", self.cfg.hover_hold_s))
+        except (TypeError, ValueError):
+            self.bus.log(f"{tag}hover: bad arguments {args!r}")
+            return
+        box = self.fl.cfg.geofence
+        height = min(max(height, box.zmin), box.zmax)
+        seconds = min(max(seconds, 1.0), 30.0)
+        self._start_mission(HoverPlan(height, seconds), f"hover test: {height:.2f} m for {seconds:.0f} s", tag)
+
     def _cmd_alarm(self, tag: str) -> None:
         if not self.armed:
             self.bus.log(f"{tag}alarm refused: disarmed (arm first)")
@@ -541,16 +571,22 @@ class Mission:
 
     # ------------------------------------------------------------------ flight worker
 
-    def _start_mission(self, path: paths.Path, why: str, tag: str = "") -> bool:
+    def _start_mission(self, path, why: str, tag: str = "") -> bool:
+        """path: a paths.Path to fly, or a HoverPlan."""
+        hover = isinstance(path, HoverPlan)
         with self._lock:
             busy = self.in_flight or (self._flight_thread is not None and self._flight_thread.is_alive())
             if busy or self.fl.state != "idle":
                 self.bus.log(f"{tag}{why} refused: flight in progress ({self.fl.state})")
                 return False
-            self._current_path = path
-            self.active_path = path.name
-        self.bus.update(active_path=path.name)
-        self.bus.log(f"{tag}{why}: {path.name} ({path.length:.2f} m, {path.duration:.1f} s)")
+            if not hover:
+                self._current_path = path
+                self.active_path = path.name
+        if hover:
+            self.bus.log(f"{tag}{why}")
+        else:
+            self.bus.update(active_path=path.name)
+            self.bus.log(f"{tag}{why}: {path.name} ({path.length:.2f} m, {path.duration:.1f} s)")
         if self.inline_flights:
             self._worker(path)
             return True
@@ -566,32 +602,46 @@ class Mission:
                 if reason:
                     self.bus.log(f"refused: {reason}")
                     break
+                hover = isinstance(path, HoverPlan)
                 with self._lock:
                     if not self.armed:                   # a stop arrived during preflight
                         self.bus.log("mission cancelled")
                         break
-                    self._current_path = path
-                    self.active_path = path.name
+                    self._current_path = None if hover else path
+                    if not hover:
+                        self.active_path = path.name
                     self.in_flight = True
                 flew = True
-                self.bus.update(active_path=path.name)
+                if not hover:
+                    self.bus.update(active_path=path.name)
                 if self.supervisor is not None:
                     self.supervisor.stop()               # one log block in flight
+                saved_height = self.fl.cfg.takeoff_height
                 try:
+                    if hover:
+                        self.fl.cfg.takeoff_height = path.height_m
                     if not self.fl.takeoff():
                         self.bus.log(f"takeoff aborted: {self.fl.last_abort_reason}")
+                    elif hover:
+                        self.bus.log(f"hovering at {path.height_m:.2f} m for {path.seconds:.0f} s")
+                        if not self.fl.hold(path.seconds):
+                            self.bus.log(f"hover aborted: {self.fl.last_abort_reason}")
+                        else:
+                            self.fl.land()
+                            self.bus.log("landed after hover test")
                     elif not self.fl.fly_path(path, land=True):
                         self.bus.log(f"flight aborted: {self.fl.last_abort_reason}")
                     else:
                         self.bus.log(f"landed after {path.name}")
                 finally:
+                    self.fl.cfg.takeoff_height = saved_height
                     with self._lock:
                         self.in_flight = False
                     if self.supervisor is not None:
                         self.supervisor.start()
                 with self._lock:
                     nxt, self._pending_relaunch = self._pending_relaunch, None
-                    relaunch = nxt is not None and self.fl.state == "idle" and self.armed
+                    relaunch = nxt is not None and self.fl.state == "idle" and self.armed and not hover
                     if relaunch:
                         ex = exit_letter(nxt.name)
                         if ex:
@@ -685,7 +735,7 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     logging.basicConfig(level=args.log_level.upper(), format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
-    cfg = MissionConfig(ext_std=args.ext_std)
+    cfg = MissionConfig(ext_std=args.ext_std, allow_flights=args.sim or args.tracker != "sim")
     feeder = None
     if args.sim:
         import mission_sim

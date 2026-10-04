@@ -7,6 +7,8 @@ the operator UI can be exercised end to end:
 * ``alarm`` / ``cast`` fly the drone dot along a stored path (takeoff -> fly ->
   land) using the path's own times; ``exit_blocked A`` mid-flight reroutes to
   ``exit_b`` (and vice versa)
+* ``hover`` is the motors-on smoke test: straight up from the current spot to
+  ``height_m`` (default 0.6 m), hold ``seconds`` (default 8 s), land by itself
 * ``record_start`` fakes a hand-carried drone (guide) or a wand drawing (spell)
   by following a demo shape with noise and appending live points;
   ``record_stop`` + ``save_as`` run the REAL ``paths.clean_path`` and
@@ -36,11 +38,22 @@ __all__ = ["Simulator"]
 
 GROUND_Z = 0.02
 HOVER_SPEED = config.REPLAY_SPEED_MPS  # m/s, used for takeoff / transit legs
+HOVER_HEIGHT_MIN, HOVER_HEIGHT_MAX = 0.2, 1.2  # m, the geofence's z range
+HOVER_SECONDS_MIN, HOVER_SECONDS_MAX = 1.0, 30.0
 
 
 def _lerp(a: np.ndarray, b: np.ndarray, u: float) -> np.ndarray:
     u = min(1.0, max(0.0, u))
     return a + (b - a) * u
+
+
+def _num(value: Any, default: float) -> float:
+    """A command argument as float; ``default`` when missing or not a number."""
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    return out if math.isfinite(out) else default
 
 
 class Simulator(threading.Thread):
@@ -74,7 +87,7 @@ class Simulator(threading.Thread):
         self.battery = 4.10
 
         # flight state machine
-        self.phase: str = "idle"  # idle | takeoff | transit | flying | landing | estop
+        self.phase: str = "idle"  # idle | takeoff | transit | hover | flying | landing | estop
         self.path: Path | None = None
         self.replay_t = 0.0
         self.leg_from = self.pos.copy()
@@ -82,6 +95,8 @@ class Simulator(threading.Thread):
         self.leg_dur = 1.0
         self.leg_t = 0.0
         self.after_leg = "flying"
+        self.hover_t = 0.0
+        self.hover_dur = 8.0
 
         # recording
         self.rec_active = False
@@ -214,6 +229,17 @@ class Simulator(threading.Thread):
                 return
             self.bus.log(f"{tag}cast {path.name} ({path.length:.2f} m, {path.duration:.1f} s)")
             self._start_flight(path)
+        elif name == "hover":
+            if not self.armed:
+                self.bus.log(f"{tag}{name} refused: disarmed (arm first)")
+                return
+            if self.phase != "idle":
+                self.bus.log(f"{tag}hover refused: flight in progress")
+                return
+            height = min(HOVER_HEIGHT_MAX, max(HOVER_HEIGHT_MIN, _num(args.get("height_m"), 0.6)))
+            seconds = min(HOVER_SECONDS_MAX, max(HOVER_SECONDS_MIN, _num(args.get("seconds"), 8.0)))
+            self.bus.log(f"{tag}hover test: {height:.2f} m for {seconds:.0f} s")
+            self._start_hover(height, seconds)
         elif name == "exit_blocked":
             ex = str(args.get("exit", "A")).strip().upper()[:1] or "A"
             if ex not in self.blocked:
@@ -227,12 +253,12 @@ class Simulator(threading.Thread):
                     return
                 self.alarm_exit = other
                 self.bus.log(f"REROUTE -> exit {other} ({path.name})")
-                if self.phase in ("takeoff", "transit", "flying"):
+                if self.phase in ("takeoff", "transit", "hover", "flying"):
                     self._start_leg(path.position_at(0.0), "flying", path=path, phase="transit")
                 else:
                     self._start_flight(path)
         elif name == "land":
-            if self.phase in ("takeoff", "transit", "flying"):
+            if self.phase in ("takeoff", "transit", "hover", "flying"):
                 self.bus.log(f"{tag}landing")
                 self._start_landing()
             else:
@@ -315,7 +341,7 @@ class Simulator(threading.Thread):
         self.active_path = path.name
         self.rec_active = False
         start = path.position_at(0.0)
-        if self.phase in ("takeoff", "transit", "flying"):
+        if self.phase in ("takeoff", "transit", "hover", "flying"):
             self._start_leg(start, "flying", path=path, phase="transit")
         else:
             self.pos[2] = GROUND_Z
@@ -334,6 +360,16 @@ class Simulator(threading.Thread):
         self.phase = phase
         self.replay_t = 0.0
 
+    def _start_hover(self, height: float, seconds: float) -> None:
+        """Takeoff leg straight up from the current x, y; ``advance`` then holds for ``seconds``."""
+        self.rec_active = False
+        self.hover_t = 0.0
+        self.hover_dur = seconds
+        self.pos[2] = GROUND_Z
+        target = self.pos.copy()
+        target[2] = height
+        self._start_leg(target, "hover", path=None, phase="takeoff")
+
     def _start_landing(self) -> None:
         target = self.pos.copy()
         target[2] = GROUND_Z
@@ -349,10 +385,18 @@ class Simulator(threading.Thread):
                     self.phase = "flying"
                     self.replay_t = 0.0
                     self.bus.log(f"flying {self.path.name}")
+                elif self.after_leg == "hover":
+                    self.phase = "hover"
+                    self.hover_t = 0.0
+                    self.bus.log("hovering")
                 else:
                     self.phase = "idle"
                     self.armed = False
                     self.bus.log("landed")
+        elif self.phase == "hover":
+            self.hover_t += dt
+            if self.hover_t >= self.hover_dur:
+                self._start_landing()
         elif self.phase == "flying" and self.path is not None:
             self.replay_t += dt
             self.pos = self.path.position_at(self.replay_t)
@@ -381,7 +425,7 @@ class Simulator(threading.Thread):
                 )
 
         # battery: ~7 min of flight
-        drain = (0.6 / 420.0) if self.phase in ("takeoff", "transit", "flying") else (0.6 / 7200.0)
+        drain = (0.6 / 420.0) if self.phase in ("takeoff", "transit", "hover", "flying") else (0.6 / 7200.0)
         self.battery = max(3.3, self.battery - drain * dt)
 
     def _recorded_point(self, dt: float) -> np.ndarray:
@@ -406,7 +450,7 @@ class Simulator(threading.Thread):
         duration = float(self.path.duration) if self.path is not None else 0.0
         rt = min(self.replay_t, duration) if replay_active else 0.0
         flight_state = {
-            "idle": "idle", "takeoff": "takeoff", "transit": "flying", "flying": "flying",
+            "idle": "idle", "takeoff": "takeoff", "transit": "flying", "hover": "hover", "flying": "flying",
             "landing": "landing", "estop": "estop",
         }[self.phase]
         # fake desk hardware check (what ui.live publishes from stabilizer.roll/pitch): 5 Hz while idle

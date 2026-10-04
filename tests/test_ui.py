@@ -562,6 +562,68 @@ class SimulatorTests(unittest.TestCase):
         self.run_for(0.1)
         self.assertFalse(self.bus.snapshot_dict()["flight"]["armed"])
 
+    def test_hover_refused_while_disarmed(self):
+        self.q.push("hover")
+        self.run_for(0.2)
+        s = self.bus.snapshot_dict()
+        self.assertEqual(s["flight"]["state"], "idle")
+        self.assertFalse(s["flight"]["armed"])
+        self.assertLess(s["drone"]["z"], 0.05)
+        self.assertTrue(any("hover refused: disarmed" in line for line in s["log"]))
+
+    def test_hover_climbs_holds_and_lands(self):
+        self.q.push("arm", {"on": True})
+        self.q.push("hover", {"seconds": 3, "height_m": 0.6})
+        self.run_for(0.2)
+        s = self.bus.snapshot_dict()
+        self.assertEqual(s["flight"]["state"], "takeoff")
+        self.assertTrue(any("hover test: 0.60 m for 3 s" in line for line in s["log"]))
+        self.run_for(2.5)  # 0.58 m climb at 0.3 m/s is done; holding
+        s = self.bus.snapshot_dict()
+        self.assertEqual(s["flight"]["state"], "hover")
+        self.assertAlmostEqual(s["drone"]["z"], 0.6, delta=0.05)
+        self.assertFalse(s["replay"]["active"])
+        self.assertTrue(s["flight"]["armed"])
+        self.assertTrue(any(line.endswith("hovering") for line in s["log"]))
+        self.run_for(6.0)  # rest of the 3 s hold + landing
+        s = self.bus.snapshot_dict()
+        self.assertEqual(s["flight"]["state"], "idle")
+        self.assertFalse(s["flight"]["armed"])
+        self.assertLess(s["drone"]["z"], 0.05)
+        self.assertTrue(any(line.endswith("landed") for line in s["log"]))
+
+    def test_hover_default_height_is_clamped(self):
+        self.q.push("arm", {"on": True})
+        self.q.push("hover", {"height_m": 5.0, "seconds": 1})
+        hover_z: list[float] = []
+        for _ in range(int(12.0 * 30)):  # 1.18 m climb + 1 s hold + descent < 12 s
+            self.sim.step(1 / 30)
+            s = self.bus.snapshot_dict()
+            if s["flight"]["state"] == "hover":
+                hover_z.append(s["drone"]["z"])
+        self.assertTrue(hover_z, "never reached the hover phase")
+        self.assertLessEqual(max(hover_z), 1.2 + 1e-6)
+        self.assertGreater(max(hover_z), 1.1)
+        self.assertEqual(self.bus.snapshot_dict()["flight"]["state"], "idle")
+
+    def test_hover_refused_while_flying_and_land_ends_hover(self):
+        self.q.push("arm", {"on": True})
+        self.q.push("hover", {"seconds": 20})
+        self.run_for(3.0)
+        self.assertEqual(self.bus.snapshot_dict()["flight"]["state"], "hover")
+        self.q.push("hover")
+        self.run_for(0.1)
+        s = self.bus.snapshot_dict()
+        self.assertEqual(s["flight"]["state"], "hover")
+        self.assertTrue(any("hover refused: flight in progress" in line for line in s["log"]))
+        self.q.push("land")
+        self.run_for(0.1)
+        self.assertEqual(self.bus.snapshot_dict()["flight"]["state"], "landing")
+        self.run_for(3.0)
+        s = self.bus.snapshot_dict()
+        self.assertEqual(s["flight"]["state"], "idle")
+        self.assertFalse(s["flight"]["armed"])
+
 
 # ---------------------------------------------------------------- live bridge
 

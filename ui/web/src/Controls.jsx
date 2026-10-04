@@ -18,7 +18,7 @@ export default function Controls({ state, send }) {
   const blocked = alarm.blocked_exits || [];
   const paths = s.paths || [];
   const flight = s.flight?.state || 'idle';
-  const airborne = ['takeoff', 'flying', 'landing'].includes(flight);
+  const airborne = ['takeoff', 'hover', 'flying', 'landing'].includes(flight);
   const armed = !!s.flight?.armed;
 
   const saveAs = () => {
@@ -135,6 +135,15 @@ export default function Controls({ state, send }) {
 
       <Section title="Flight" className="flight">
         <div className="row">
+          <button
+            className={`btn hover ${armed ? '' : 'disarmed'}`}
+            disabled={airborne}
+            onClick={() => send('hover', { height_m: 0.6, seconds: 8 })}
+            title="Take off, hold 0.6 m for 8 s, land. Needs ARMED."
+          >
+            HOVER TEST
+            <small>0.6 m, 8 s, lands by itself</small>
+          </button>
           <button className="btn land" onClick={() => send('land')} disabled={!airborne}>
             LAND
           </button>

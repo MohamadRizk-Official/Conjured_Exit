@@ -214,6 +214,12 @@ class PreflightTests(unittest.TestCase):
         m, _, _ = make_pre(sup=FakeSupervisor(vbat=3.6))
         self.assertTrue(preflight(m).startswith("battery"))
 
+    def test_flights_disabled_by_config(self):
+        m, _, _ = make_pre(sup=FakeSupervisor())
+        m.cfg = MissionConfig(allow_flights=False)
+        self.assertIn("flights disabled", preflight(m))
+        self.assertIsNone(preflight(make_pre(sup=FakeSupervisor())[0]))
+
 
 def make_mission(tmpdir, *, armed=False, cf=None, tracker_kwargs=None, supervisor=None, inline=True, cfg=None):
     clock = FakeClock()
@@ -505,6 +511,51 @@ class PublishTests(unittest.TestCase):
         s = bus.snapshot_dict()
         self.assertFalse(s["tracking"]["ok"])
         self.assertAlmostEqual(s["drone"]["z"], 0.3)               # from converged_telemetry
+
+
+class HoverCommandTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_hover_refused_while_disarmed(self):
+        m, cf, bus, q, store, clock, tr = make_mission(self.tmp.name)
+        m.handle(Command("hover"))
+        self.assertEqual(cf.commander.setpoints, [])
+        self.assertTrue(any("hover refused" in l and "disarmed" in l for l in bus.snapshot_dict()["log"]))
+
+    def test_hover_climbs_holds_lands_and_disarms(self):
+        m, cf, bus, q, store, clock, tr = make_mission(self.tmp.name, armed=True)
+        m.handle(Command("hover", {"height_m": 0.6, "seconds": 2}))
+        sp = cf.commander.setpoints
+        self.assertAlmostEqual(len(sp), 20 + 10 + 40 + 20, delta=3)      # up 1 s, settle 0.5 s, hold 2 s, down 1 s
+        self.assertAlmostEqual(max(p[2] for p in sp), 0.6, places=6)
+        self.assertTrue(all(abs(p[0]) < 1e-9 and abs(p[1]) < 1e-9 for p in sp))   # straight up from (0,0)
+        self.assertEqual(m.fl.state, "idle")
+        self.assertFalse(m.armed)
+        s = bus.snapshot_dict()
+        self.assertEqual(s["active_path"], "exit_a")                     # a hover does not touch the selection
+        self.assertFalse(s["replay"]["active"])
+        self.assertTrue(any("hover test" in l for l in s["log"]))
+        self.assertTrue(any("landed" in l for l in s["log"]))
+        self.assertEqual(m.fl.cfg.takeoff_height, 0.5)                   # restored afterwards
+
+    def test_hover_height_and_time_are_clamped(self):
+        m, cf, bus, q, store, clock, tr = make_mission(self.tmp.name, armed=True)
+        m.handle(Command("hover", {"height_m": 5.0, "seconds": 0.0}))
+        sp = cf.commander.setpoints
+        self.assertLessEqual(max(p[2] for p in sp), 1.2 + 1e-9)
+        self.assertGreaterEqual(len(sp), 20 + 10 + 20 + 20 - 3)          # hold clamped up to >= 1 s
+
+    def test_hover_uses_config_defaults(self):
+        m, cf, bus, q, store, clock, tr = make_mission(self.tmp.name, armed=True,
+                                                      cfg=MissionConfig(relaunch_delay_s=0.1, hover_hold_s=1.0, hover_height_m=0.8))
+        m.handle(Command("hover"))
+        sp = cf.commander.setpoints
+        self.assertAlmostEqual(max(p[2] for p in sp), 0.8, places=6)
+        self.assertAlmostEqual(len(sp), 20 + 10 + 20 + 20, delta=3)
 
 
 if __name__ == "__main__":

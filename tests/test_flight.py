@@ -415,5 +415,38 @@ class FakeCrazyflieTests(unittest.TestCase):
         cf.platform.send_crash_recovery_request()     # any method is a no-op
 
 
+class HoldTests(unittest.TestCase):
+    def test_hold_streams_the_takeoff_target_then_lands(self):
+        clock = FakeClock()
+        fl, cf = make_flight(clock, telemetry=converged_telemetry(0.0, 0.0, 0.0),
+                             takeoff_time_s=1.0, hover_time_s=0.5, land_time_s=1.0, takeoff_height=0.6)
+        self.assertTrue(fl.takeoff())
+        n0 = len(cf.commander.setpoints)
+        self.assertTrue(fl.hold(2.0))
+        held = cf.commander.setpoints[n0:]
+        self.assertAlmostEqual(len(held), 40, delta=1)
+        self.assertTrue(all(abs(p[2] - 0.6) < 1e-9 for p in held))
+        self.assertEqual(fl.state, "hover")
+        fl.land()
+        self.assertEqual(fl.state, "idle")
+
+    def test_hold_refuses_unless_hovering(self):
+        clock = FakeClock()
+        fl, cf = make_flight(clock, telemetry=converged_telemetry())
+        with self.assertRaises(FlightRefused):
+            fl.hold(1.0)
+
+    def test_hold_lands_when_tracking_is_lost(self):
+        clock = FakeClock()
+        tracker = FakeTracker(clock, lose_after_calls=40)
+        fl, cf = make_flight(clock, tracker=tracker, telemetry=converged_telemetry(),
+                             takeoff_time_s=1.0, hover_time_s=0.5, land_time_s=1.0)
+        self.assertTrue(fl.takeoff())
+        self.assertFalse(fl.hold(5.0))
+        self.assertIn("tracking lost", fl.last_abort_reason)
+        self.assertEqual(fl.state, "idle")
+        self.assertGreaterEqual(cf.commander.stops, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

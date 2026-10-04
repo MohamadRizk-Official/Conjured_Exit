@@ -395,6 +395,19 @@ class Flight:
             self.last_abort_reason = str(e)
             return False
 
+    def hold(self, seconds: float) -> bool:
+        """Keep streaming the last target (state 'hover') for `seconds`. False if aborted (stop/land/tracking)."""
+        if self.state != "hover":
+            raise FlightRefused(f"hold needs state 'hover', not '{self.state}' (take off first)")
+        self.last_abort_reason = ""
+        x, y, z = self._last_target
+        try:
+            self._stream(lambda t: (x, y, z), max(0.0, float(seconds)))
+            return True
+        except FlightAborted as e:
+            self.last_abort_reason = str(e)
+            return False
+
     def fly_path(self, path: paths.Path, land: bool = True) -> bool:
         """Transit to the path start at cfg.speed, follow it at its own timing, hover, (land)."""
         if self.state != "hover":

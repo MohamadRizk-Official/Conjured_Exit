@@ -50,8 +50,8 @@ action, and everything flies through the geofence + safety layer.
     active_path     name | None
     replay          {active, t, duration, progress}
     alarm           {active, exit ("A"|"B"), blocked_exits [..]}
-    flight          {state: "idle"|"takeoff"|"hover"|"flying"|"landing"|"estop", estimator_converged}
-                    (flight.Flight.STATES; the simulator never reports "hover")
+    flight          {state: "idle"|"takeoff"|"hover"|"flying"|"landing"|"estop", estimator_converged, armed}
+                    (flight.Flight.STATES; "hover" = the hold after take-off and the hover test; armed = the ARMED switch)
     hwcheck         {active, roll_deg, pitch_deg, ts}   5 Hz stabilizer.roll/pitch while the real
                     drone is idle on the desk (ui.live), so tilting it by hand shows on screen
     log             last 50 status lines ("HH:MM:SS  text")
@@ -114,6 +114,7 @@ COMMAND_SPECS: dict[str, tuple[tuple[str, ...], str]] = {
     "stop": ((), "EMERGENCY STOP: motors off immediately"),
     "clear_alarm": ((), "reset alarm, blocked exits and e-stop; back to idle"),
     "arm": (("on",), "arm (true) or disarm (false) the drone; alarm/cast fly only while armed"),
+    "hover": ((), "hover test: take off to ~0.6 m, hold 8 s, land (optional args height_m, seconds)"),
     "select_path": (("name",), "highlight / preview a stored path without flying"),
     "set_source": (("source",), "feed the UI from 'sim' (fake drone) or 'live' (real link); 'none' = nobody"),
 }

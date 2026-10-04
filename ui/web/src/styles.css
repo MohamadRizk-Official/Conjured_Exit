@@ -809,7 +809,8 @@ body,
   animation: pulse-red 1.2s infinite;
 }
 .btn.alarm.disarmed,
-.btn.cast.disarmed {
+.btn.cast.disarmed,
+.btn.hover.disarmed {
   opacity: 0.55;
   filter: saturate(0.5);
 }
