@@ -142,6 +142,7 @@ class Telemetry:
         self.window = window
         self.var_threshold = var_threshold
         self.battery_v: Optional[float] = None
+        self.battery_min_v: Optional[float] = None       # lowest reading since reset_battery_min() (sag under load)
         self.x = self.y = self.z = 0.0
         self.var = [float("nan")] * 3
         self._hist = [deque(maxlen=window) for _ in range(3)]
@@ -155,6 +156,8 @@ class Telemetry:
             self.n_updates += 1
             if "pm.vbat" in data:
                 self.battery_v = float(data["pm.vbat"])
+                if self.battery_min_v is None or self.battery_v < self.battery_min_v:
+                    self.battery_min_v = self.battery_v
             for key in ("kalman.stateX", "stateEstimate.x"):
                 if key in data:
                     self.x = float(data[key])
@@ -169,6 +172,11 @@ class Telemetry:
                     v = float(data[key])
                     self.var[axis] = v
                     self._hist[axis].append(v)
+
+    def reset_battery_min(self) -> None:
+        """Restart the sag measurement from the current reading (call right before the motors start)."""
+        with self._lock:
+            self.battery_min_v = self.battery_v
 
     @property
     def position(self) -> tuple[float, float, float]:
@@ -398,6 +406,10 @@ class Flight:
         if self.cfg.thrust_unlock:
             for _ in range(3):
                 self.cf.commander.send_setpoint(0, 0, 0, 0)
+        reset_min = getattr(self.telemetry, "reset_battery_min", None)
+        if callable(reset_min):
+            reset_min()
+        v_start = getattr(self.telemetry, "battery_v", None)
         self._set_state("takeoff")
         zs = ramp(max(0.0, z0), self.cfg.takeoff_height, self.cfg.takeoff_time_s, self.cfg.setpoint_hz)
         hz = self.cfg.setpoint_hz
@@ -409,8 +421,11 @@ class Flight:
                 climb = self.cfg.takeoff_height - max(0.0, z0)
                 if z_now is not None and (z_now - max(0.0, z0)) < self.cfg.takeoff_min_rise_frac * climb:
                     self.soft_stop()
+                    v_min = getattr(self.telemetry, "battery_min_v", None)
+                    sag = (f"; battery sagged {v_start:.2f} -> {v_min:.2f} V"
+                           if v_start is not None and v_min is not None else "")
                     raise FlightAborted(f"takeoff did not lift (measured z {z_now:.2f} m after the ramp to "
-                                        f"{self.cfg.takeoff_height:.2f} m): motors off")
+                                        f"{self.cfg.takeoff_height:.2f} m{sag}): motors off")
             self._set_state("hover")
             self._stream(lambda t: (x, y, self.cfg.takeoff_height), self.cfg.hover_time_s, floor_ok=True)
             return True
@@ -628,8 +643,15 @@ def disable_link_pinger(cf) -> None:
     cf.connected.add_callback(_stop)
 
 
-def connect(uri: Optional[str] = None, rw_cache: str = "cache", timeout_s: float = 120.0):
-    """Connect ONCE per session (TOC cache on) and return the cflib Crazyflie. Raises on failure."""
+def connect(uri: Optional[str] = None, rw_cache: str = "cache", timeout_s: float = 120.0, *,
+            setup_timeout_s: float = 30.0, attempts: int = 3, retry_delay_s: float = 4.0):
+    """Connect ONCE per session (TOC cache on) and return the cflib Crazyflie. Raises on failure.
+
+    Over BLE one lost notification during cflib's connection setup (log/mem/param TOC handshake) stalls
+    cflib forever: it never retries those requests. Good setups finish in 12-16 s (measured 2026-10-04),
+    so if ``connected`` has not fired after ``setup_timeout_s`` the link is closed and opened again, up
+    to ``attempts`` times. A reported connection failure (no drone found, link dropped) is raised at once.
+    """
     import cflib.crtp
     from cflib.crazyflie import Crazyflie
 
@@ -641,24 +663,40 @@ def connect(uri: Optional[str] = None, rw_cache: str = "cache", timeout_s: float
     except ImportError:
         log.warning("ble_link not available; only built-in cflib drivers")
     cflib.crtp.init_drivers()
-    cf = Crazyflie(rw_cache=rw_cache)
-    disable_link_pinger(cf)
-    done = threading.Event()
-    failure: list[str] = []
-    cf.fully_connected.add_callback(lambda _u: done.set())
-    cf.connection_failed.add_callback(lambda _u, msg: (failure.append(str(msg)), done.set()))
-    cf.connection_lost.add_callback(lambda _u, msg: log.error("connection lost: %s", msg))
     uri = uri or config.LINK_URI
     t0 = time.perf_counter()
-    log.info("connecting to %s (first connect downloads TOCs, ~20-25 s over BLE)", uri)
-    cf.open_link(uri)
-    if not done.wait(timeout_s):
-        cf.close_link()
-        raise TimeoutError(f"no connection to {uri} after {timeout_s:.0f} s")
-    if failure:
-        raise ConnectionError(failure[0])
-    log.info("connected to %s in %.1f s", uri, time.perf_counter() - t0)
-    return cf
+    for attempt in range(1, max(1, attempts) + 1):
+        cf = Crazyflie(rw_cache=rw_cache)
+        disable_link_pinger(cf)
+        setup_done = threading.Event()
+        done = threading.Event()
+        failure: list[str] = []
+        cf.connected.add_callback(lambda _u: setup_done.set())
+        cf.fully_connected.add_callback(lambda _u: done.set())
+        cf.connection_failed.add_callback(lambda _u, msg: (failure.append(str(msg)), done.set()))
+        cf.connection_lost.add_callback(lambda _u, msg: log.error("connection lost: %s", msg))
+        log.info("connecting to %s (attempt %d/%d; TOCs from cache, ~50 s over BLE)", uri, attempt, attempts)
+        cf.open_link(uri)
+        if not setup_done.wait(setup_timeout_s) and not done.is_set():
+            log.warning("connection setup stalled for %.0f s (lost handshake reply over BLE); reconnecting", setup_timeout_s)
+            cf.close_link()
+            if attempt < attempts:
+                time.sleep(retry_delay_s)
+                continue
+            raise TimeoutError(f"connection setup to {uri} stalled {attempts} times")
+        if not done.wait(timeout_s):
+            cf.close_link()
+            raise TimeoutError(f"no connection to {uri} after {timeout_s:.0f} s")
+        if failure:
+            raise ConnectionError(failure[0])
+        link = getattr(cf, "link", None)
+        if link is not None and hasattr(link, "pump_hz"):
+            # TOC download wants a fast pump (one downlink packet per uplink packet); in flight every null is
+            # an acknowledged write that delays setpoints and extpos (2026-10-04: 50 writes/s -> 1.3 s lag).
+            link.pump_hz = float(config.BLE_PUMP_FLIGHT_HZ)
+        log.info("connected to %s in %.1f s", uri, time.perf_counter() - t0)
+        return cf
+    raise TimeoutError(f"no connection to {uri}")
 
 
 def _check(args: argparse.Namespace) -> int:

@@ -645,6 +645,7 @@ class TelemetryDictTests(unittest.TestCase):
         self.assertEqual(d["flight_state"], "idle")
         self.assertIn("feed", d)
         self.assertIn("camera_xyz", d)
+        self.assertIn("battery_min_v", d)                 # lowest voltage seen under load
         self.assertIsNone(d["supervisor"])                 # no supervisor watch in sim
         m.supervisor = FakeSupervisor(info=hop.BIT_CRASHED | hop.BIT_CAN_BE_ARMED, vbat=3.95)
         d = telemetry_dict(m)

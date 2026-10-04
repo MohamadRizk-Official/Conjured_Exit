@@ -528,15 +528,47 @@ class BleDriver(CRTPDriver):
             logger.warning("BleDriver: could not request a fast connection interval: %r", e)
             return False
 
-    async def _interval_guard(self, client) -> None:
-        """Keep the connection interval short: re-request whenever Windows reports > 20 ms."""
+    async def _settle_interval(self, client, wait_s: float = 4.0) -> None:
+        """Wait for the nRF's own connection-parameter update (15 -> 45 ms, ~2 s after connect) and
+        restore the fast interval BEFORE cflib starts its TOC/param download.
+
+        Measured 2026-10-04: when the 45 -> 15 ms switch landed during the parameter TOC request, the
+        reply was lost, cflib never retries it, and the connect stalled until the 120 s timeout (3 of
+        5 attempts). Settling the interval first costs ~2.5 s and removes the race.
+        """
         import sys
         if sys.platform != "win32":
             return
         dev = self._winrt_device(client)
         if dev is None:
             return
-        checks = [0.5, 2.5, 4.5, 7.0, 10.0, 15.0] + [20.0 + 10.0 * i for i in range(10_000)]
+        loop = asyncio.get_running_loop()
+        t0 = loop.time()
+        while loop.time() - t0 < wait_s:
+            interval = self._read_interval_ms(dev)
+            self._conn_interval_ms = interval
+            if interval is not None and interval > 20.0:
+                logger.info("BleDriver: connection interval is %.2f ms before any CRTP traffic; requesting 15 ms", interval)
+                if self._request_fast_interval(dev):
+                    await asyncio.sleep(0.6)
+                    self._conn_interval_ms = self._read_interval_ms(dev)
+                    logger.info("BleDriver: connection interval now %s ms (settled before cflib)", self._conn_interval_ms)
+                return
+            await asyncio.sleep(0.25)
+        logger.info("BleDriver: connection interval %s ms unchanged for %.0f s; continuing", self._conn_interval_ms, wait_s)
+
+    async def _interval_guard(self, client) -> None:
+        """Keep the connection interval short: re-request whenever Windows reports > 20 ms.
+
+        First check only after cflib's connection setup (TOC fetches) is normally done: a switch during
+        a reliable request can lose its reply (see _settle_interval)."""
+        import sys
+        if sys.platform != "win32":
+            return
+        dev = self._winrt_device(client)
+        if dev is None:
+            return
+        checks = [8.0, 12.0, 16.0] + [20.0 + 10.0 * i for i in range(10_000)]
         t0 = asyncio.get_running_loop().time()
         for t in checks:
             await asyncio.sleep(max(0.0, t - (asyncio.get_running_loop().time() - t0)))
@@ -587,6 +619,8 @@ class BleDriver(CRTPDriver):
             self._pid = 0
             self._recent_writes.clear()
             await client.start_notify(CRTPDOWN_UUID, self._on_notify)
+            if self.fast_interval:
+                await self._settle_interval(client)   # before cflib sends anything (see the docstring)
             self._client = client
             self._connected = True
             self._sender_task = asyncio.get_running_loop().create_task(self._sender(client, self._tx_queue))
@@ -648,10 +682,14 @@ class BleDriver(CRTPDriver):
                 logger.warning("BleDriver: disconnect failed: %r", e)
 
     async def _sender(self, client, tx_queue: asyncio.Queue) -> None:
-        """Single writer: real packets in order; a 0xFF null packet whenever idle for 1/pump_hz."""
-        pump_hz = float(self.pump_hz or 0.0)
-        pump_interval = 1.0 / pump_hz if pump_hz > 0 else None
+        """Single writer: real packets in order; a 0xFF null packet whenever idle for 1/pump_hz.
+
+        ``self.pump_hz`` is re-read for every packet so a client can connect with a fast pump (TOC
+        download is one downlink packet per uplink packet) and slow it down for flight, where every
+        null is an acknowledged write that delays the real setpoints (measured 2026-10-04)."""
         while True:
+            pump_hz = float(self.pump_hz or 0.0)
+            pump_interval = 1.0 / pump_hz if pump_hz > 0 else None
             is_null = False
             try:
                 if pump_interval is None:

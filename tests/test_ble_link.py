@@ -747,6 +747,20 @@ class TestSendPolicy(DriverTestBase):
         time.sleep(0.05)
         self.assertEqual(drv.stats()["tx_null"], after)        # pump stops with the link
 
+    def test_pump_rate_can_be_lowered_after_connect(self):
+        """mission.py connects with a fast pump (TOC download) and slows it for flight: the sender re-reads it."""
+        drv, client = self.connected_driver(pump_hz=200, max_uplink_packet=0)
+        time.sleep(0.12)
+        self.assertGreaterEqual(drv.stats()["tx_null"], 5, "pump did not run")
+        drv.pump_hz = 20
+        time.sleep(0.06)                                   # let the in-flight wait at the old rate expire
+        before = drv.stats()["tx_null"]
+        time.sleep(0.25)
+        slowed = drv.stats()["tx_null"] - before
+        self.assertGreaterEqual(slowed, 2, "pump stopped entirely")
+        self.assertLessEqual(slowed, 9, f"pump still fast: {slowed} nulls in 0.25 s at 20 Hz")
+        drv.close()
+
     def test_pump_off(self):
         drv, client = self.connected_driver()   # pump_hz patched to 0
         time.sleep(0.1)

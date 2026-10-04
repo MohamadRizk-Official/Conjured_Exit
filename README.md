@@ -132,6 +132,8 @@ Tests (267, no hardware needed):
 | path | what |
 |---|---|
 | `ble_link.py`, `ble_framing.py` | cflib `ble://` link driver (bleak), CRTP framing, null-packet pump, 20-byte packet limit |
+| `tools/ble_echo_test.py` | loopback integrity test: numbered packets to the echo channel, per-mode corruption and latency |
+| `tools/sim_session.py` | scripted hover / teach / cast / alarm-and-stop session against a running server, with a report |
 | `ble_bench.py`, `test_ble_link_hw.py` | raw BLE benchmark and the driver's hardware acceptance test |
 | `toc_names.py` | resolves parameter/log names that the drone's radio firmware mangles over BLE |
 | `tracker.py` | ArUco single-camera tracker (`ArucoTracker`), colour two-camera tracker, `SimTracker` |
@@ -152,14 +154,22 @@ Tests (267, no hardware needed):
 Measured on the Crazyflie 2.1+ with nRF firmware 2024.10 and a Windows 11 laptop (bleak 3,
 WinRT). Everything in the driver follows from these.
 
-* GATT: service `0201`, CRTP characteristic `0202` for whole packets up to 20 bytes
-  (write-without-response works), CRTPUP `0203` for fragmented uplink, CRTPDOWN `0204`
-  notifications for downlink.
+* GATT: service `0201`, CRTP characteristic `0202` for whole packets up to 20 bytes, CRTPUP `0203`
+  for fragmented uplink, CRTPDOWN `0204` notifications for downlink.
+* **Write-without-response corrupts packets.** Loopback test (`tools/ble_echo_test.py`, numbered
+  packets to the echo channel, 4 October): fire-and-forget writes came back with their first bytes
+  overwritten (`FF 00 FF`) in 4 of 200 packets when alone and in 183 of 200 while acknowledged
+  extpos traffic ran alongside. That was the flight configuration until then, so the drone was
+  flying on garbage setpoints: every take-off lurched, skidded or flipped. Every port is now written
+  with response (`BLE_STREAM_PORTS = ()`), which delivered 200 of 200 intact.
+* Acknowledged writes have a budget of about 30 per second at the 15 ms interval: 15 Hz extpos plus
+  15 Hz setpoints runs at about 0.1 s round-trip latency, 40 per second lags 0.75 s and 50 per
+  second lags 1.3 s. The idle null pump drops from 100 Hz to 20 Hz once connected, because each
+  null is an acknowledged write too.
 * The downlink is driven by the uplink: the drone releases one downlink packet per uplink packet,
   so an idle link gets nothing. The driver sends null packets ("pump") at 100 Hz when idle.
-* The nRF firmware drops one notification per connection event when more than one is queued.
-  Reliable traffic (parameters, log setup) therefore goes write-with-response, serialized; only
-  streaming ports (setpoints, external position) use write-without-response.
+* The nRF firmware drops one notification per connection event when more than one is queued, so
+  all traffic is serialized through one acknowledged write at a time.
 * Every packet longer than 20 bytes is corrupted in both directions (byte 19 lost, a garbage byte
   appended). Consequences: parameter/log names arrive mangled (`toc_names.resolve` maps the true
   names), log blocks are built with at most 5 variables per packet, the 29-byte pose packet and
@@ -176,14 +186,16 @@ WinRT). Everything in the driver follows from these.
 Rules that keep the one battery and the few spare propellers alive:
 
 * Only one process holds the link. Connect once at start, keep it alive, TOC cache on.
-* Position setpoints streamed at 20 Hz; if the link drops, the firmware's setpoint watchdog stops
-  the drone. Take-off and landing are ramps of the same setpoints; landing ends with a stop
+* Position setpoints streamed at 15 Hz (acknowledged writes, see the BLE budget above); if the link
+  drops, the firmware's setpoint watchdog stops the drone. Take-off and landing are ramps of the same setpoints; landing ends with a stop
   setpoint from 6 cm.
 * One 10 Hz log block in flight: battery, Kalman x/y/z and position variance (14 bytes, one BLE
   notification). Nothing else is logged while flying.
 * Every target is clamped into the geofence (1.5 m square, 0.2 to 1.2 m up). Tracking lost for
-  longer than 0.3 s lands the drone. Emergency stop is fire-and-forget, sent three times, on the
-  spacebar, the UI and voice.
+  longer than 0.3 s triggers a blind descent (level attitude, thrust-only steps, motors off) because
+  the position estimate can no longer be trusted. A take-off that has not gained 40 % of the climb
+  by the end of the ramp is cut with stop setpoints, and the abort message records how far the
+  battery sagged. The emergency stop (spacebar, STOP button) locks the drone until a reboot.
 * The supervisor often boots in a "crashed" state; a crash-recovery request clears it before
   arming. The complementary estimator reports altitude above sea level, so flights use the Kalman
   estimator with a reset and external position.

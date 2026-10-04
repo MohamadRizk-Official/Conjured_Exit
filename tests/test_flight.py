@@ -5,12 +5,15 @@ Everything runs against fakes with a fake clock, so no drone, no sleeping.
 from __future__ import annotations
 
 import math
+import re
+import types
 import unittest
 from dataclasses import dataclass
 
 import numpy as np
 
 import feed
+import config
 import flight
 import paths
 from flight import Flight, FlightConfig, FlightRefused, Telemetry
@@ -574,6 +577,133 @@ class ThrustUnlockTests(unittest.TestCase):
                              thrust_unlock=False)
         self.assertTrue(fl.takeoff())
         self.assertFalse(hasattr(cf.commander, "rpyt"))
+
+
+class _Caller:
+    def __init__(self):
+        self.callbacks = []
+
+    def add_callback(self, fn):
+        self.callbacks.append(fn)
+
+    def call(self, *args):
+        for fn in list(self.callbacks):
+            fn(*args)
+
+
+class _ScriptedCrazyflie:
+    """Stands in for cflib.crazyflie.Crazyflie: `script` says what each open_link() does."""
+
+    instances: list = []
+    script: list = []
+
+    def __init__(self, rw_cache=None):
+        self.connected = _Caller()
+        self.fully_connected = _Caller()
+        self.connection_failed = _Caller()
+        self.connection_lost = _Caller()
+        self.closed = 0
+        self.link = types.SimpleNamespace(pump_hz=100.0)
+        self.behaviour = self.script.pop(0) if self.script else "ok"
+        _ScriptedCrazyflie.instances.append(self)
+
+    def open_link(self, uri):
+        if self.behaviour == "ok":
+            self.connected.call(uri)
+            self.fully_connected.call(uri)
+        elif self.behaviour == "fail":
+            self.connection_failed.call(uri, "no Crazyflie found")
+        # "stall": nothing ever fires
+
+    def close_link(self):
+        self.closed += 1
+
+
+class ConnectRetryTests(unittest.TestCase):
+    def setUp(self):
+        _ScriptedCrazyflie.instances = []
+
+    def _connect(self, script, **kw):
+        from unittest import mock
+        _ScriptedCrazyflie.script = list(script)
+        with mock.patch("cflib.crazyflie.Crazyflie", _ScriptedCrazyflie), \
+             mock.patch("cflib.crtp.init_drivers"), \
+             mock.patch.object(flight, "disable_link_pinger"):
+            return flight.connect("ble://test", setup_timeout_s=0.05, timeout_s=0.2, attempts=3, retry_delay_s=0.0, **kw)
+
+    def test_stalled_setup_is_retried_and_the_next_attempt_wins(self):
+        cf = self._connect(["stall", "ok"])
+        self.assertIs(cf, _ScriptedCrazyflie.instances[1])
+        self.assertEqual(_ScriptedCrazyflie.instances[0].closed, 1)     # the stalled link was closed
+        self.assertEqual(len(_ScriptedCrazyflie.instances), 2)
+
+    def test_all_attempts_stalled_raises_timeout(self):
+        with self.assertRaises(TimeoutError):
+            self._connect(["stall", "stall", "stall"])
+        self.assertEqual(len(_ScriptedCrazyflie.instances), 3)
+
+    def test_connection_failure_is_not_retried_here(self):
+        with self.assertRaises(ConnectionError):
+            self._connect(["fail", "ok"])
+        self.assertEqual(len(_ScriptedCrazyflie.instances), 1)
+
+    def test_every_uplink_port_is_acknowledged(self):
+        """2026-10-04 loopback: fire-and-forget writes arrive corrupted (183/200 with the camera feed running)."""
+        import ble_link
+        self._connect(["ok"])
+        self.assertEqual(tuple(config.BLE_STREAM_PORTS), ())
+        self.assertEqual(set(ble_link.BleDriver.stream_ports), set())
+
+    def test_rates_fit_the_acknowledged_write_budget(self):
+        """2026-10-04 loopback: 40 writes/s lags 0.75 s, 50/s lags 1.3 s, 30/s (15 + 15) stays at ~0.1 s."""
+        self.assertLessEqual(config.EXTPOS_RATE_HZ + config.SETPOINT_RATE_HZ, 30.0)
+        self.assertGreaterEqual(config.SETPOINT_RATE_HZ, 10.0)     # commander watchdog levels at 0.5 s of silence
+        self.assertGreaterEqual(config.EXTPOS_RATE_HZ, 10.0)
+
+    def test_pump_is_slowed_for_flight_after_the_toc_download(self):
+        cf = self._connect(["ok"])
+        self.assertEqual(cf.link.pump_hz, config.BLE_PUMP_FLIGHT_HZ)
+        self.assertLess(config.BLE_PUMP_FLIGHT_HZ, config.BLE_PUMP_HZ)
+
+
+class BatterySagTests(unittest.TestCase):
+    """The lowest battery voltage seen under load is the one number that tells a flat pack from a software fault."""
+
+    def test_telemetry_tracks_the_minimum_and_can_restart_it(self):
+        tel = Telemetry()
+        self.assertIsNone(tel.battery_min_v)
+        for v in (4.1, 3.5, 3.9):
+            tel.update(0, {"pm.vbat": v})
+        self.assertAlmostEqual(tel.battery_min_v, 3.5)
+        tel.reset_battery_min()                                   # restarts from the current reading
+        self.assertAlmostEqual(tel.battery_min_v, 3.9)
+        tel.update(0, {"pm.vbat": 3.8})
+        self.assertAlmostEqual(tel.battery_min_v, 3.8)
+
+    def test_lift_guard_reports_how_far_the_battery_sagged(self):
+        clock = FakeClock()
+        tel = converged_telemetry(0.0, 0.0, 0.05)
+        tel.update(0, {"pm.vbat": 4.1})
+
+        holder = {}
+
+        class SaggingTracker(FakeTracker):
+            def get_state(self):
+                st = super().get_state()
+                if holder.get("fl") is not None and holder["fl"].state == "takeoff":   # motors running
+                    tel.update(0, {"pm.vbat": max(3.0, tel.battery_v - 0.05)})         # 50 mV per poll
+                return st
+
+        tracker = SaggingTracker(clock, xyz=(0.0, 0.0, 0.05))
+        fl, cf = make_flight(clock, tracker=tracker, telemetry=tel, takeoff_time_s=1.0, hover_time_s=0.5,
+                             takeoff_height=0.6, takeoff_min_rise_frac=0.4)
+        holder["fl"] = fl
+        self.assertFalse(fl.takeoff())
+        self.assertIn("did not lift", fl.last_abort_reason)
+        m = re.search(r"battery sagged ([0-9.]+) -> ([0-9.]+) V", fl.last_abort_reason)
+        self.assertIsNotNone(m, fl.last_abort_reason)
+        self.assertAlmostEqual(float(m.group(1)), 4.10)
+        self.assertLess(float(m.group(2)), 3.5)
 
 
 if __name__ == "__main__":

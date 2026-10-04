@@ -786,6 +786,7 @@ def telemetry_dict(m) -> dict:
         "position": pos,
         "var": var,
         "battery_v": float(bat) if bat is not None else None,
+        "battery_min_v": (float(tel.battery_min_v) if getattr(tel, "battery_min_v", None) is not None else None),
         "n_updates": int(tel.n_updates),
         "timestamp_ms": tel.timestamp_ms,
         "flight_state": m.fl.state,
@@ -865,7 +866,8 @@ def main(argv: list[str] | None = None) -> int:
         cf = mission_sim.SimDrone()
         tracker = mission_sim.SimDroneTracker(cf)
         mission = Mission(cf, tracker, store, cfg=cfg, sim=True,
-                          flight_cfg=flight.FlightConfig(takeoff_time_s=3.0, takeoff_min_rise_frac=0.4))
+                          flight_cfg=flight.FlightConfig(takeoff_time_s=4.0, takeoff_min_rise_frac=0.4,
+                                                         setpoint_hz=config.SETPOINT_RATE_HZ))
         feeder = mission_sim.SimTelemetry(mission.fl, cf).start()
         print("[mission] SIM: fake drone, demo paths (exit_a, exit_b, spiral, square)")
     else:
@@ -877,7 +879,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[mission] connecting to {uri} (about 50 s over BLE) ...")
         cf = flight.connect(uri)
         mission = Mission(cf, tracker, store, cfg=cfg,
-                          flight_cfg=flight.FlightConfig(link_uri=uri, takeoff_time_s=3.0, takeoff_min_rise_frac=0.4),
+                          flight_cfg=flight.FlightConfig(link_uri=uri, takeoff_time_s=4.0, takeoff_min_rise_frac=0.4,
+                                                         setpoint_hz=config.SETPOINT_RATE_HZ),
                           supervisor=hover.SupervisorWatch(cf))
         print(f"[mission] connected; tracker={args.tracker}; paths: {', '.join(store.names()) or 'none yet'}")
 

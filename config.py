@@ -15,15 +15,21 @@ LINK_URI = os.environ.get("PATHCASTER_LINK_URI", f"ble://{DRONE_BLE_ADDRESS}")
 
 # BLE link driver tuning (ble_link.py). Measured 2026-10-03: with a 15 ms connection interval and
 # pump 100 Hz the parameter download runs at ~10 params/s (30 s for 310 params).
+BLE_PUMP_FLIGHT_HZ = 20.0    # pump after connect: every null is an acknowledged write that delays real packets
 BLE_PUMP_HZ = 100.0          # null packets per second when idle (keeps the downlink flowing)
 BLE_FAST_INTERVAL = True     # ask Windows 11 for the 15 ms connection interval
-# CRTP ports written WITHOUT response (fire and forget). Port 6 (external position) is deliberately
-# NOT in the list: a dropped or mangled position packet corrupts the drone's Kalman filter, so those go
-# write-with-response (reliable, serialized). Setpoints (3) stay fire-and-forget.
-BLE_STREAM_PORTS = (3, 7, 8)
+# CRTP ports written WITHOUT response (fire and forget). EMPTY on purpose. Loopback test 2026-10-04
+# (tools/ble_echo_test.py, nRF 2024.10): fire-and-forget packets arrive mangled (first bytes overwritten
+# with FF 00 FF), 4/200 when alone and 183/200 while the camera feed runs. That was why every take-off
+# lurched, skidded or flipped: the setpoints the drone received were garbage. Every port now goes
+# write-with-response; the budget is ~30 acknowledged writes/s, so keep extpos + setpoint rates inside it.
+BLE_STREAM_PORTS = ()
 
-# Position feed (feed.py): external position rate into the onboard Kalman filter.
-EXTPOS_RATE_HZ = 30.0
+# Position feed (feed.py): external position rate into the onboard Kalman filter, and the setpoint
+# stream rate (flight.py via mission.py). Both are acknowledged BLE writes; loopback 2026-10-04:
+# 15 + 15 per second stays at ~0.1 s latency, 40/s lags 0.75 s, 50/s lags 1.3 s (tools/ble_echo_test.py).
+EXTPOS_RATE_HZ = 15.0
+SETPOINT_RATE_HZ = 15.0
 
 # Safety (flight.py). Non-negotiable values from README.md.
 TRACKING_LOST_LAND_S = 0.3      # tracking lost longer than this -> land
