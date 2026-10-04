@@ -231,8 +231,14 @@ the drone's heading set from the marker at every estimator reset, motors-off ins
 descent near the floor, a camera thread that survives USB dropouts, a 0.8 s marker-loss tolerance,
 and a hand-carry axis check plus a plain-English trace explainer (`tools/`) to read each attempt.
 
-Open: record a hand-carried route and cast it on hardware, the land-then-relaunch reroute on
-hardware, voice commands in the browser (branch `voice-commands`), the demo.
+**First route flight, 07:18.** A hand-carried route to the exit (36 s walk, 5.9 m) was recorded, cleaned and
+flown on ALARM: take-off, hover, 12 s along the corridor at 0.6 m, until the camera lost the 7 cm marker 4.8 m
+away. The camera tracks the marker reliably to about 4 m, so `paths/exit_a.json` is trimmed to that range for
+the demo and the full walk is kept as `exit_a_full`. A 12 cm marker (`calib/marker1_drone_12cm.png`) covers
+the whole route from the same camera spot.
+
+Open: the full-length route with the bigger marker, the land-then-relaunch reroute on hardware, voice
+commands in the browser (branch `voice-commands`), the demo.
 
 ## License
 
