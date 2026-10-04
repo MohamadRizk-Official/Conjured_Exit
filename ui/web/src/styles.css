@@ -864,3 +864,95 @@ body,
   background: #2a1515;
   white-space: normal;
 }
+
+/* Big voice feedback over the 3D view (left of the 400px control column). */
+.mic-live {
+  position: fixed;
+  left: 18px;
+  bottom: 44px;
+  width: calc(100vw - 400px - 36px);
+  max-width: 760px;
+  z-index: 25;
+  padding: 10px 16px;
+  border-radius: 12px;
+  background: rgba(60, 12, 12, 0.92);
+  border: 2px solid var(--bad);
+  pointer-events: none;
+}
+
+.mic-live.hearing {
+  background: rgba(120, 16, 16, 0.95);
+  box-shadow: 0 0 24px rgba(255, 77, 77, 0.6);
+}
+
+.mic-live-head {
+  font-size: 1rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  color: #ffb3b3;
+}
+
+.mic-dot {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--bad);
+  margin-right: 6px;
+  animation: blink 1.2s steps(2, start) infinite;
+}
+
+.mic-live-text {
+  font-size: 1.7rem;
+  font-weight: 700;
+  min-height: 1.4em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mic-live-text .final {
+  color: #fff;
+}
+
+.mic-live-text .interim {
+  color: #b9a0a0;
+}
+
+.voice-toast {
+  position: fixed;
+  left: calc((100vw - 400px) / 2);
+  top: 42%;
+  transform: translate(-50%, -50%);
+  z-index: 40;
+  max-width: calc(100vw - 400px - 40px);
+  padding: 18px 40px;
+  border-radius: 16px;
+  font-size: 2.6rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-align: center;
+  color: #fff;
+  pointer-events: none;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
+  animation: toast-in 0.18s ease-out;
+}
+
+.voice-toast.ok {
+  background: #1e8a4c;
+}
+
+.voice-toast.bad {
+  background: #b3261e;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.85);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
