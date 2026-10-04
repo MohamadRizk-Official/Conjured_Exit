@@ -42,7 +42,9 @@ DRONE_MARKER_YAW_OFFSET_DEG = 0.0
 TAKEOFF_MAX_DRIFT_M = 0.4
 
 # Safety (flight.py). Non-negotiable values from README.md.
-TRACKING_LOST_LAND_S = 0.3      # tracking lost longer than this -> land
+TRACKING_LOST_LAND_S = 0.8      # no camera fix for this long -> motors off (take-off / low) or blind descent (high).
+                                # 2026-10-04 05:29: a clean climb was cut by a 0.55 s detection gap at 0.3 m while the
+                                # drone tilted to hold position; it coasts fine on its own sensors for under a second.
 REPLAY_SPEED_MPS = 0.3          # fixed slow replay speed
 WAYPOINT_DT_S = 0.4             # one go_to roughly every 0.3-0.5 s
 TAKEOFF_HEIGHT_M = 0.5

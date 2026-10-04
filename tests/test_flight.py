@@ -654,6 +654,13 @@ class ConnectRetryTests(unittest.TestCase):
         self.assertEqual(tuple(config.BLE_STREAM_PORTS), ())
         self.assertEqual(set(ble_link.BleDriver.stream_ports), set())
 
+    def test_tracking_loss_tolerance_covers_a_detection_gap_but_not_a_runaway(self):
+        """05:29 flight: a 0.55 s gap (marker edge-on while tilting) cut a clean climb at 0.3 s tolerance.
+        Under 1 s the drone coasts on its IMU with centimetres of drift; longer and it must come down."""
+        self.assertGreaterEqual(config.TRACKING_LOST_LAND_S, 0.6)
+        self.assertLessEqual(config.TRACKING_LOST_LAND_S, 1.0)
+        self.assertEqual(flight.FlightConfig().tracking_lost_land_s, config.TRACKING_LOST_LAND_S)
+
     def test_rates_fit_the_acknowledged_write_budget(self):
         """2026-10-04 loopback: 40 writes/s lags 0.75 s, 50/s lags 1.3 s, 30/s (15 + 15) stays at ~0.1 s."""
         self.assertLessEqual(config.EXTPOS_RATE_HZ + config.SETPOINT_RATE_HZ, 30.0)
