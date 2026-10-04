@@ -216,7 +216,7 @@ Rules that keep the one battery and the few spare propellers alive:
 * A two-camera colour-marker tracker (nose/tail/wand colours, triangulation) is in the same file
   and was the original plan; the single-camera ArUco path needs one calibration and no colour tuning.
 
-## Status (3 October 2026)
+## Status (4 October 2026)
 
 Done: BLE benchmark and driver (hardware acceptance passed), tracker code and calibration tools,
 flight layer, path engine, UI with simulator and live telemetry, first motorised flight (barometer
@@ -224,8 +224,15 @@ hop, caught by hand as expected without position input), autonomous hover sequen
 fakes and in dry run, the mission app (`mission.py`: ARMED gate, record / save / replay, alarm,
 land-then-relaunch reroute, pre-flight checks) verified end to end in simulation.
 
-Open: camera calibration on the rig, first autonomous hover on hardware, the mission app on the real
-link and camera, voice commands in the browser, the demo.
+**First autonomous hover on hardware: 4 October, 06:03.** Take-off on the ramp, 15 s hold at 0.60 m
+with at most 0.29 m of drift, self-landing, over the BLE link with the single-camera ArUco tracker.
+What it took, in order: every BLE write acknowledged (fire-and-forget setpoints arrived corrupted),
+the drone's heading set from the marker at every estimator reset, motors-off instead of a blind
+descent near the floor, a camera thread that survives USB dropouts, a 0.8 s marker-loss tolerance,
+and a hand-carry axis check plus a plain-English trace explainer (`tools/`) to read each attempt.
+
+Open: record a hand-carried route and cast it on hardware, the land-then-relaunch reroute on
+hardware, voice commands in the browser (branch `voice-commands`), the demo.
 
 ## License
 
