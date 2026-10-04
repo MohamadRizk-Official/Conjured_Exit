@@ -116,6 +116,15 @@ export function precheck(cmd, state) {
   return null;
 }
 
+// Plain-language reasons shown on the page when speech recognition stops working.
+export const ERROR_HINTS = {
+  'not-allowed': 'microphone blocked: click the lock next to the address bar, allow Microphone, reload',
+  'service-not-allowed': 'speech service blocked: open this page in Chrome or Edge',
+  network: 'speech service unreachable: needs internet, and Chrome or Edge (not the app pane)',
+  'audio-capture': 'no microphone found: check the Windows input device',
+  'language-not-supported': 'speech language not supported by this browser',
+};
+
 export function speechSupported() {
   return typeof window !== 'undefined' && !!(window.SpeechRecognition || window.webkitSpeechRecognition);
 }
@@ -126,7 +135,7 @@ export function speechSupported() {
 //   onIgnored({heard, confidence, reason})   heard something but did not act
 //   onListening(bool)
 export class VoiceListener {
-  constructor({ getPaths = () => [], onTranscript, onCommand, onIgnored, onListening } = {}) {
+  constructor({ getPaths = () => [], onTranscript, onCommand, onIgnored, onListening, onHearing, onError } = {}) {
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     this.rec = new SR();
     this.rec.continuous = true;
@@ -135,7 +144,7 @@ export class VoiceListener {
     this.listening = false;
     this.abortFired = new Set(); // result indexes that already sent `stop`
     this.getPaths = getPaths;
-    this.cb = { onTranscript, onCommand, onIgnored, onListening };
+    this.cb = { onTranscript, onCommand, onIgnored, onListening, onHearing, onError };
 
     this.rec.onresult = (e) => this.handleResult(e);
     // Chrome ends the session after silence; keep going while we want to listen.
@@ -146,11 +155,15 @@ export class VoiceListener {
         this.cb.onListening?.(false);
       }
     };
+    // Fires while sound is being picked up, so the page can show the mic is live.
+    this.rec.onspeechstart = () => this.cb.onHearing?.(true);
+    this.rec.onspeechend = () => this.cb.onHearing?.(false);
     this.rec.onerror = (e) => {
-      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
-        this.listening = false;
-        this.cb.onIgnored?.({ heard: '', confidence: 0, reason: 'microphone blocked' });
-      }
+      // 'no-speech' and 'aborted' happen routinely (silence, push-to-talk release).
+      if (e.error === 'no-speech' || e.error === 'aborted') return;
+      // Anything else means it cannot work; stop instead of restarting in a loop.
+      this.listening = false;
+      this.cb.onError?.(ERROR_HINTS[e.error] || `speech error: ${e.error}`);
     };
   }
 

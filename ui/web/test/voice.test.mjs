@@ -116,3 +116,28 @@ test('precheck blocks commands the backend would drop', () => {
   // landing is never blocked, whatever the page thinks the flight state is
   assert.equal(precheck({ name: 'land', args: {} }, { flight: { state: 'idle' } }), null);
 });
+
+test('speech errors stop the listener and explain why; routine ones are ignored', () => {
+  const { l } = makeListener();
+  const errors = [];
+  l.cb.onError = (t) => errors.push(t);
+  l.listening = true;
+  l.rec.onerror({ error: 'no-speech' });
+  l.rec.onerror({ error: 'aborted' });
+  assert.deepEqual(errors, []);
+  assert.equal(l.listening, true);
+  l.rec.onerror({ error: 'network' });
+  assert.equal(l.listening, false);
+  assert.match(errors[0], /unreachable/);
+  l.rec.onerror({ error: 'weird' });
+  assert.equal(errors[1], 'speech error: weird');
+});
+
+test('hearing callbacks follow speech start and end', () => {
+  const { l } = makeListener();
+  const seen = [];
+  l.cb.onHearing = (on) => seen.push(on);
+  l.rec.onspeechstart();
+  l.rec.onspeechend();
+  assert.deepEqual(seen, [true, false]);
+});

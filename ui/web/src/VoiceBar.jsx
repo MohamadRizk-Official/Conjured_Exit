@@ -12,6 +12,7 @@ const describe = (cmd) => [cmd.name, cmd.args?.name, cmd.args?.exit, cmd.args?.m
 export default function VoiceBar({ send, state }) {
   const paths = state?.paths || [];
   const [listening, setListening] = useState(false);
+  const [hearing, setHearing] = useState(false);
   const [interim, setInterim] = useState('');
   const [final, setFinal] = useState('');
   const [chip, setChip] = useState(null); // {text, status: sent|ack|error|ignored}
@@ -46,7 +47,13 @@ export default function VoiceBar({ send, state }) {
     if (!speechSupported()) return undefined;
     listener.current = new VoiceListener({
       getPaths: () => pathsRef.current,
-      onListening: setListening,
+      onListening: (on) => {
+        setListening(on);
+        if (on) setChip((c) => (c && c.status === 'fault' ? null : c));
+        else setHearing(false);
+      },
+      onHearing: setHearing,
+      onError: (text) => setChip({ id: ++seq.current, text, status: 'fault' }),
       onTranscript: ({ interim: i, final: f }) => {
         setInterim(i);
         if (f !== null) setFinal(f);
@@ -106,12 +113,12 @@ export default function VoiceBar({ send, state }) {
       <h2>Voice</h2>
       <div className="row">
         <button
-          className={`btn mic ${listening ? 'on' : ''}`}
+          className={`btn mic ${listening ? 'on' : ''} ${hearing ? 'hearing' : ''}`}
           onClick={toggle}
           disabled={!supported}
           title={supported ? 'Click to toggle, or hold V to talk' : 'Speech recognition needs Chrome or Edge'}
         >
-          {listening ? '● Listening' : supported ? 'Mic off (hold V)' : 'No speech in this browser'}
+          {listening ? (hearing ? '● Hearing you...' : '● Listening - speak now') : supported ? 'Mic off (hold V)' : 'No speech in this browser'}
         </button>
       </div>
       <div className="transcript">

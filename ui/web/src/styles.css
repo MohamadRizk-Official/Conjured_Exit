@@ -845,3 +845,22 @@ body,
 .voice .row .text {
   flex: 1;
 }
+
+.voice .btn.mic.hearing {
+  animation: mic-pulse 0.8s ease-in-out infinite alternate;
+}
+
+@keyframes mic-pulse {
+  from {
+    box-shadow: 0 0 0 0 rgba(255, 77, 77, 0.7);
+  }
+  to {
+    box-shadow: 0 0 0 8px rgba(255, 77, 77, 0);
+  }
+}
+
+.voice-chip.fault {
+  border-left-color: var(--bad);
+  background: #2a1515;
+  white-space: normal;
+}
