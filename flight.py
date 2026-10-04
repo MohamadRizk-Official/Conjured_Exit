@@ -129,6 +129,7 @@ class FlightConfig:
     estop_repeats: int = 3
     blind_descent_thrust: tuple = (40000, 34000)  # tracking lost in flight: thrust-only steps (16-bit, hover ~40000)
     blind_descent_step_s: float = 1.0             # seconds per step, then motors off
+    blind_descent_min_z: float = 0.4              # below this last target height (or during take-off): motors off instead
     takeoff_min_rise_frac: float = 0.0
     takeoff_max_drift_m: float = 0.0                  # abort the ramp when the camera sees > this much xy drift (0 = off)
     marker_yaw_offset_deg: float = 0.0                # nose heading relative to the marker's top edge (CCW positive)           # >0: abort (motors off) if the measured rise after the ramp
@@ -368,6 +369,16 @@ class Flight:
                     self._lost_since = now
                 elif now - self._lost_since >= self.cfg.tracking_lost_land_s:
                     self._lost_since = None
+                    z_last = self._last_target[2] if self._last_target is not None else None
+                    low = z_last is None or z_last < self.cfg.blind_descent_min_z
+                    in_takeoff = self.state == "takeoff"
+                    if in_takeoff or low:
+                        # 04:27: a blind descent fired 2 s into the ramp and drove the drone into the floor
+                        # at thrust. Near the floor the drop is harmless; a thrust burst in an unknown
+                        # attitude is not.
+                        self.soft_stop()
+                        where = "during take-off" if in_takeoff or z_last is None else f"at {z_last:.2f} m"
+                        raise FlightAborted(f"tracking lost > {self.cfg.tracking_lost_land_s} s {where}: motors off")
                     self.blind_descent()
                     raise FlightAborted(f"tracking lost > {self.cfg.tracking_lost_land_s} s: blind descent, motors off")
         if self.state == "takeoff" and self.cfg.takeoff_max_drift_m > 0 and self._takeoff_origin is not None:
@@ -397,7 +408,7 @@ class Flight:
             self._check_safety(check_tracking)
             x, y, z = target_at(i * dt)
             x, y, z = self._clamp(float(x), float(y), float(z), floor_ok)
-            self.cf.commander.send_position_setpoint(x, y, z, self.cfg.yaw_deg)
+            self.cf.commander.send_position_setpoint(x, y, z, self.yaw_setpoint_deg())
             self._last_target = (x, y, z)
             nxt = t0 + (i + 1) * dt
             now = self.clock()
@@ -411,6 +422,14 @@ class Flight:
         if st is None or not st.tracking_ok or st.xyz is None:
             return None
         return (float(st.xyz[0]), float(st.xyz[1]), float(st.xyz[2]))
+
+    def yaw_setpoint_deg(self) -> float:
+        """Absolute yaw for position setpoints: the heading the estimator was given (so the drone holds
+        its nose where it is), else cfg.yaw_deg. Asking for 0 while the drone knows it faces 173 deg
+        commands a half-turn spin at lift-off (04:27)."""
+        if self.last_initial_yaw_rad is not None:
+            return float(math.degrees(self.last_initial_yaw_rad))
+        return float(self.cfg.yaw_deg)
 
     def marker_heading_rad(self) -> Optional[float]:
         """The drone's nose heading in the world frame: the marker's top-edge yaw plus

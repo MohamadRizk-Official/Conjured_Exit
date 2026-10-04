@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import logging
 import math
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -51,7 +52,8 @@ class MissionConfig:
     ext_std: Optional[float] = 0.05        # locSrv.extPosStdDev; None = leave the drone's value
     converge_retry_s: float = 5.0          # one estimator reset + wait when the estimate disagrees
     feed_status_every_s: float = 10.0      # log feed.status() this often
-    allow_flights: bool = True             # False: real link + fake tracker -> arming never flies
+    allow_flights: bool = True
+    trace_path: str = ""                   # CSV of camera/estimator rows around every flight ('' = off); main() sets results/flight_trace.csv             # False: real link + fake tracker -> arming never flies
 
 
 def _finite3(xyz) -> bool:
@@ -238,6 +240,7 @@ class Mission:
         self.fl = flight.Flight(cf, flight_cfg or flight.FlightConfig(), tracker=tracker, clock=clock, sleep=sleep)
         self.feed = feed.PositionFeed(cf, tracker, clock=clock, sleep=sleep)
         self.rec = RouteRecorder(tracker, self.bus, rate_hz=self.cfg.record_hz, clock=clock, sleep=sleep)
+        self.trace: Optional[FlightTrace] = (FlightTrace(self.cfg.trace_path, clock=clock) if self.cfg.trace_path else None)
 
         self.mode = "guide"
         self.armed = False
@@ -716,6 +719,9 @@ class Mission:
         else:
             replay = {"active": False, "t": 0.0, "duration": 0.0, "progress": 0.0}
         bat = tel.battery_v
+        trace = getattr(self, "trace", None)
+        if trace is not None:
+            trace.tick(fl.state, st, tel)
         self.bus.update(
             mode=mode, active_path=active,
             drone={"x": x, "y": y, "z": z, "yaw": yaw},
@@ -731,6 +737,56 @@ class Mission:
         if now - self._last_feed_log >= self.cfg.feed_status_every_s:
             self._last_feed_log = now
             self.bus.log(self.feed.status())
+
+
+# ---------------------------------------------------------------------- flight trace
+
+class FlightTrace:
+    """Appends one CSV row per publish tick while a flight is in progress (state != idle) and for
+    ``tail_s`` afterwards: what the camera saw, what the estimator believed, the battery. Read it back
+    after a failed take-off instead of guessing. Header is written once per file."""
+
+    HEADER = "t,state,cam_ok,cam_x,cam_y,cam_z,cam_yaw_deg,est_x,est_y,est_z,bat_v"
+
+    def __init__(self, path: str, *, clock: Callable[[], float] = time.perf_counter, tail_s: float = 2.0) -> None:
+        self.path = path
+        self.clock = clock
+        self.tail_s = float(tail_s)
+        self._fh = None
+        self._last_active: Optional[float] = None
+        self.rows = 0
+
+    def tick(self, state: str, st, tel) -> None:
+        now = self.clock()
+        if state != "idle":
+            self._last_active = now
+        elif self._last_active is None or now - self._last_active > self.tail_s:
+            return
+        ok = st is not None and bool(getattr(st, "tracking_ok", False)) and _finite3(getattr(st, "xyz", None))
+        yaw = getattr(st, "yaw", None) if st is not None else None
+        cam = (f"{st.xyz[0]:.3f},{st.xyz[1]:.3f},{st.xyz[2]:.3f}," if ok else ",,,") + (
+            f"{math.degrees(float(yaw)):.1f}" if (ok and yaw is not None and math.isfinite(float(yaw))) else "")
+        ex, ey, ez = tel.position
+        bat = tel.battery_v
+        row = (f"{now:.3f},{state},{1 if ok else 0},{cam},{ex:.3f},{ey:.3f},{ez:.3f},"
+               f"{'' if bat is None else f'{bat:.2f}'}")
+        try:
+            if self._fh is None:
+                os.makedirs(os.path.dirname(os.path.abspath(self.path)), exist_ok=True)
+                new = not os.path.exists(self.path)
+                self._fh = open(self.path, "a", encoding="utf-8", newline="\n")
+                if new:
+                    self._fh.write(self.HEADER + "\n")
+            self._fh.write(row + "\n")
+            self._fh.flush()
+            self.rows += 1
+        except OSError as exc:  # pragma: no cover - disk trouble must never touch the flight
+            log.warning("flight trace write failed: %s", exc)
+
+    def close(self) -> None:
+        if self._fh is not None:
+            self._fh.close()
+            self._fh = None
 
 
 # ---------------------------------------------------------------------- camera view
@@ -862,7 +918,8 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     logging.basicConfig(level=args.log_level.upper(), format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
-    cfg = MissionConfig(ext_std=args.ext_std, allow_flights=args.sim or args.tracker != "sim")
+    cfg = MissionConfig(ext_std=args.ext_std, allow_flights=args.sim or args.tracker != "sim",
+                        trace_path=os.path.join("results", "flight_trace.csv"))
     feeder = None
     if args.sim:
         import mission_sim

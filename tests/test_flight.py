@@ -786,5 +786,71 @@ class TakeoffDriftGuardTests(unittest.TestCase):
         self.assertEqual(flight.FlightConfig().takeoff_max_drift_m, 0.0)
 
 
+class TrackingLostLowAltitudeTests(unittest.TestCase):
+    """04:27: tracking dropped 2 s into the ramp; the blind descent then drove the drone into the floor
+    at thrust for 2 s. Below blind_descent_min_z, and during the whole take-off, the only safe action
+    is motors off: a Crazyflie survives a 40 cm drop onto carpet, not a thrust burst in an unknown attitude."""
+
+    def test_tracking_lost_during_takeoff_cuts_motors_without_thrust(self):
+        clock = FakeClock()
+        tracker = FakeTracker(clock, xyz=(0.3, 0.0, 0.05), lose_after_calls=12)
+        fl, cf = make_flight(clock, tracker=tracker, telemetry=converged_telemetry(0.3, 0.0, 0.05),
+                             takeoff_time_s=4.0, hover_time_s=0.5, takeoff_height=0.6)
+        self.assertFalse(fl.takeoff())
+        self.assertIn("take-off", fl.last_abort_reason)
+        self.assertIn("motors off", fl.last_abort_reason)
+        thrusts = [r[3] for r in getattr(cf.commander, "rpyt", [])]
+        self.assertEqual([t for t in thrusts if t > 0], [])            # no blind-descent thrust at all
+        self.assertGreaterEqual(cf.commander.stops, 3)
+        self.assertEqual(cf.loc.emergency_stops, 0)                    # soft stop: drone stays armable
+        self.assertEqual(fl.state, "estop")
+
+    def test_tracking_lost_in_a_low_hover_cuts_motors(self):
+        clock = FakeClock()
+        tracker = FakeTracker(clock, xyz=(0.3, 0.0, 0.3), lose_after_calls=60)
+        fl, cf = make_flight(clock, tracker=tracker, telemetry=converged_telemetry(0.3, 0.0, 0.3),
+                             takeoff_time_s=1.0, hover_time_s=0.5, takeoff_height=0.3, blind_descent_min_z=0.4)
+        self.assertTrue(fl.takeoff())
+        self.assertFalse(fl.hold(5.0))
+        self.assertIn("motors off", fl.last_abort_reason)
+        self.assertEqual([t for t in [r[3] for r in getattr(cf.commander, "rpyt", [])] if t > 0], [])
+        self.assertEqual(fl.state, "estop")
+
+    def test_tracking_lost_in_a_high_hover_still_descends_blind(self):
+        clock = FakeClock()
+        tracker = FakeTracker(clock, xyz=(0.3, 0.0, 0.6), lose_after_calls=60)
+        fl, cf = make_flight(clock, tracker=tracker, telemetry=converged_telemetry(0.3, 0.0, 0.6),
+                             takeoff_time_s=1.0, hover_time_s=0.5, takeoff_height=0.6, blind_descent_min_z=0.4)
+        self.assertTrue(fl.takeoff())
+        self.assertFalse(fl.hold(5.0))
+        self.assertIn("blind descent", fl.last_abort_reason)
+        self.assertGreaterEqual(len([r for r in cf.commander.rpyt if r[3] > 0]), 40)
+        self.assertEqual(flight.FlightConfig().blind_descent_min_z, 0.4)
+
+
+class YawHoldTests(unittest.TestCase):
+    """Position setpoints carry an ABSOLUTE yaw. After the estimator was told the drone faces 173 deg,
+    asking for yaw 0 commands a half-turn spin at lift-off. Hold the heading we gave it instead."""
+
+    def test_setpoints_hold_the_heading_given_to_the_estimator(self):
+        clock = FakeClock()
+        tracker = FakeTracker(clock, xyz=(0.3, 0.0, 0.05), yaw=0.5)
+        fl, cf = make_flight(clock, tracker=tracker, telemetry=converged_telemetry(0.3, 0.0, 0.05),
+                             takeoff_time_s=1.0, hover_time_s=0.5)
+        fl.setup_estimator()
+        self.assertTrue(fl.takeoff())
+        yaws = {round(sp[3], 2) for sp in cf.commander.setpoints}
+        self.assertEqual(yaws, {round(math.degrees(0.5), 2)})
+
+    def test_without_a_heading_the_configured_yaw_is_used(self):
+        clock = FakeClock()
+        tracker = FakeTracker(clock, xyz=(0.3, 0.0, 0.05), yaw=None)
+        fl, cf = make_flight(clock, tracker=tracker, telemetry=converged_telemetry(0.3, 0.0, 0.05),
+                             takeoff_time_s=1.0, hover_time_s=0.5, yaw_deg=12.0)
+        fl.setup_estimator()
+        self.assertTrue(fl.takeoff())
+        self.assertEqual({sp[3] for sp in cf.commander.setpoints}, {12.0})
+
+
 if __name__ == "__main__":
     unittest.main()

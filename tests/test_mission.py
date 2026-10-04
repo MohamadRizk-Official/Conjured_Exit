@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import pathlib
 import tempfile
+import types
+import os
 import unittest
 from dataclasses import dataclass
 from typing import Optional
@@ -677,6 +679,41 @@ class TelemetryDictTests(unittest.TestCase):
 
     def tearDown(self):
         self.tmp.cleanup()
+
+
+class FlightTraceTests(unittest.TestCase):
+    """A 20 Hz CSV of what the camera and the estimator saw, written only around flights, so a failed
+    take-off can be read back instead of guessed at."""
+
+    def _state(self, ok=True, xyz=(0.3, 0.0, 0.1), yaw=3.0):
+        return types.SimpleNamespace(tracking_ok=ok, xyz=xyz, yaw=yaw)
+
+    def test_rows_only_while_airborne_plus_a_short_tail(self):
+        import tempfile
+        from mission import FlightTrace
+        clock = FakeClock()
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "trace.csv")
+            tr = FlightTrace(path, clock=clock, tail_s=2.0)
+            tel = converged_telemetry(0.3, 0.0, 0.1)
+            tr.tick("idle", self._state(), tel)                       # nothing while idle
+            self.assertFalse(os.path.exists(path))
+            for _ in range(5):
+                clock.sleep(0.05)
+                tr.tick("takeoff", self._state(xyz=(0.3, 0.0, 0.2)), tel)
+            clock.sleep(0.05)
+            tr.tick("estop", self._state(ok=False, xyz=None, yaw=None), tel)
+            for _ in range(3):
+                clock.sleep(0.5)
+                tr.tick("idle", self._state(), tel)                   # within the 2 s tail: still logged
+            clock.sleep(3.0)
+            tr.tick("idle", self._state(), tel)                       # tail over: not logged
+            tr.close()
+            lines = open(path, encoding="utf-8").read().splitlines()
+        self.assertTrue(lines[0].startswith("t,state,cam_ok,cam_x,cam_y,cam_z,cam_yaw_deg,est_x,est_y,est_z,bat_v"))
+        self.assertEqual(len(lines) - 1, 5 + 1 + 3)
+        self.assertIn(",takeoff,1,0.300,0.000,0.200,", lines[1])
+        self.assertIn(",estop,0,,,,,", lines[6])
 
 
 if __name__ == "__main__":
