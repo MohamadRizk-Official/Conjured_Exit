@@ -15,6 +15,7 @@ import numpy as np
 
 import paths as P
 from paths import (
+    trim_floor,
     GEOFENCE,
     Box,
     Path,
@@ -400,6 +401,34 @@ class TestDemoPaths(unittest.TestCase):
         # exit_b mirrors exit_a across the x axis
         np.testing.assert_allclose(demos["exit_b"].points[:, 1], -demos["exit_a"].points[:, 1], atol=1e-9)
         np.testing.assert_allclose(demos["exit_b"].points[:, 0], demos["exit_a"].points[:, 0], atol=1e-9)
+
+
+class TestFloorTrim(unittest.TestCase):
+    """06:58 route flight: the first saved point was at the 0.20 m floor clamp (the drone was still on the
+    carpet when recording started), so the drone dove toward the floor right after take-off and the camera
+    lost it. Guide routes drop the floor-level samples at both ends."""
+
+    def test_leading_and_trailing_floor_samples_are_dropped(self):
+        floor = [[0.3, 0.0, 0.05]] * 20
+        lift = [[0.3, 0.0, 0.1], [0.3, 0.0, 0.2]]
+        carry = [[0.3 + 0.05 * i, 0.0, 0.55] for i in range(60)]
+        down = [[3.3, 0.0, 0.2], [3.3, 0.0, 0.05], [3.3, 0.0, 0.05]]
+        pts = np.array(floor + lift + carry + down)
+        kept = trim_floor(pts, z_min=0.3)
+        self.assertEqual(len(kept), 60)
+        self.assertTrue((kept[:, 2] >= 0.3).all())
+
+    def test_clean_path_guide_trims_by_default_and_spell_does_not(self):
+        raw = np.array([[0.3, 0.0, 0.05]] * 10 + [[0.3 + 0.02 * i, 0.0, 0.55] for i in range(100)] + [[2.3, 0.0, 0.05]] * 5)
+        guide = clean_path(raw, mode="guide", name="g")
+        self.assertGreaterEqual(float(guide.points[0, 2]), 0.5)        # starts at carry height, not 0.2
+        self.assertGreaterEqual(float(guide.points[-1, 2]), 0.5)
+        spell = clean_path(raw, mode="spell", name="s")
+        self.assertLess(float(spell.points[0, 2]), 0.5)               # spell shapes keep every sample
+
+    def test_all_floor_samples_keeps_the_input(self):
+        pts = np.array([[0.3, 0.0, 0.05]] * 30)
+        self.assertEqual(len(trim_floor(pts, z_min=0.3)), 30)          # nothing to fly at height: leave it to the clamp
 
 
 if __name__ == "__main__":

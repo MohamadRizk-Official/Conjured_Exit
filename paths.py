@@ -68,6 +68,7 @@ __all__ = [
     "path_length",
     "fit_to_box",
     "clamp_to_box",
+    "trim_floor",
     "retime",
     "to_waypoints",
     "clean_path",
@@ -394,6 +395,17 @@ def fit_to_box(
     return fitted, scale, offset
 
 
+def trim_floor(points: ArrayLike, z_min: float = 0.3) -> FloatArray:
+    """Drop the leading and trailing samples below ``z_min``: the drone sitting on the floor and being
+    picked up / set down while recording a guide route. If nothing is above ``z_min`` the input is
+    returned unchanged (the box clamp then decides)."""
+    pts = _as_points(points)
+    above = np.flatnonzero(pts[:, 2] >= float(z_min))
+    if above.size == 0:
+        return pts
+    return pts[int(above[0]):int(above[-1]) + 1]
+
+
 def clamp_to_box(points: ArrayLike, box: Box = GEOFENCE) -> FloatArray:
     """Clamp every point into ``box`` (Guide mode: true scale, no rescaling)."""
     return box.clamp(_as_points(points))
@@ -573,6 +585,7 @@ def clean_path(
     polyorder: int = 3,
     margin: float = 0.05,
     fit: bool | None = None,
+    floor_trim_m: float | None = None,
 ) -> Path:
     """One-call pipeline: smooth -> resample -> fit (spell) / clamp (guide) -> retime.
 
@@ -582,6 +595,11 @@ def clean_path(
     Non-finite rows are dropped.  Raises ``ValueError`` for fewer than two
     distinct finite points.
     """
+    if floor_trim_m is None:
+        floor_trim_m = 0.3 if mode == "guide" else 0.0
+    if floor_trim_m and floor_trim_m > 0:
+        raw_points = trim_floor(raw_points, z_min=float(floor_trim_m))
+
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
     raw = _as_points(raw_points)
