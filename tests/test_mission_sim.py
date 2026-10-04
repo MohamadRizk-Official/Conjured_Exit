@@ -96,6 +96,7 @@ class MissionOnSimDroneTests(unittest.TestCase):
             m = Mission(d, tr, PathStore(tmp, demo=True), bus=bus, commands=q, cfg=MissionConfig(relaunch_delay_s=0.1),
                         flight_cfg=flight.FlightConfig(takeoff_time_s=1.0, hover_time_s=0.5, land_time_s=1.0),
                         sim=True, clock=clock, sleep=clock.sleep, inline_flights=True)
+            m.estimator_ready = True    # the estimator-manager thread is not started here
             tel = SimTelemetry(m.fl, d, clock=clock, sleep=clock.sleep)
             for _ in range(12):
                 tel.tick()

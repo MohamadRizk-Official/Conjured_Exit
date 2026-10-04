@@ -39,6 +39,8 @@ class SupervisorWatch:
         self.cf = cf
         self.info = None
         self.vbat = None
+        self.roll_deg = None       # attitude at rest: the level check (a drone that booted tilted flies sideways)
+        self.pitch_deg = None
         self.conf = None
         self.running = False
 
@@ -46,7 +48,8 @@ class SupervisorWatch:
         if self.conf is None:
             conf = flight.make_log_config("pre", 100)
             alias = {}
-            for name, fetch_as in (("supervisor.info", "uint16_t"), ("pm.vbat", "FP16")):
+            for name, fetch_as in (("supervisor.info", "uint16_t"), ("pm.vbat", "FP16"),
+                                   ("stabilizer.roll", "FP16"), ("stabilizer.pitch", "FP16")):   # 2+2+2+2 = 8 bytes
                 seen = resolve(self.cf.log.toc, name)
                 conf.add_variable(seen, fetch_as)
                 alias[seen] = name
@@ -57,6 +60,10 @@ class SupervisorWatch:
                     self.info = int(d["supervisor.info"])
                 if "pm.vbat" in d:
                     self.vbat = float(d["pm.vbat"])
+                if "stabilizer.roll" in d:
+                    self.roll_deg = float(d["stabilizer.roll"])
+                if "stabilizer.pitch" in d:
+                    self.pitch_deg = float(d["stabilizer.pitch"])
 
             conf.data_received_cb.add_callback(on_data)
             self.cf.log.add_config(conf)
@@ -73,9 +80,17 @@ class SupervisorWatch:
                 pass
             self.running = False
 
+    @property
+    def tilt_deg(self) -> float | None:
+        if self.roll_deg is None or self.pitch_deg is None:
+            return None
+        return max(abs(self.roll_deg), abs(self.pitch_deg))
+
     def line(self) -> str:
+        level = ("level ?" if self.tilt_deg is None
+                 else f"level roll {self.roll_deg:+.1f} pitch {self.pitch_deg:+.1f} deg")
         return f"bat {self.vbat if self.vbat is None else f'{self.vbat:.2f} V'}  supervisor[" \
-               f"{'?' if self.info is None else hop.decode_info(self.info)}]"
+               f"{'?' if self.info is None else hop.decode_info(self.info)}]  {level}"
 
 
 def make_tracker(kind: str, camera: int):

@@ -49,6 +49,7 @@ class MissionConfig:
     hover_hold_s: float = 15.0             # 0.6 m: with the camera 1.3 m up / 1.7 m away, ~0.7 m is the frame's top
     agree_tol_m: float = 0.2               # estimator vs camera before takeoff
     min_battery_v: float = 3.7
+    max_tilt_deg: float = 5.0              # pre-flight: |roll|,|pitch| at rest above this = not level, refuse
     ext_std: Optional[float] = 0.05        # locSrv.extPosStdDev; None = leave the drone's value
     converge_retry_s: float = 5.0          # one estimator reset + wait when the estimate disagrees
     feed_status_every_s: float = 10.0      # log feed.status() this often
@@ -188,6 +189,8 @@ def preflight(m) -> Optional[str]:
     if st is None or not st.tracking_ok or st.xyz is None:
         return "tracker not locked"
     fl = m.fl
+    if not getattr(m, "estimator_ready", True):
+        return "estimator not set up (reset with heading has not run yet)"
     if not fl.telemetry.converged:
         fl.setup_estimator()
         if not fl.wait_for_estimator(m.cfg.converge_retry_s):
@@ -206,13 +209,18 @@ def preflight(m) -> Optional[str]:
             hop.crash_recovery_request(m.cf)
             m.sleep(1.0)
             info = sup.info
+        roll, pitch = getattr(sup, "roll_deg", None), getattr(sup, "pitch_deg", None)
         bus = getattr(m, "bus", None)
         if bus is not None:
             vb = sup.vbat if sup.vbat is not None else fl.telemetry.battery_v
+            level = (f"  level roll {roll:+.1f} pitch {pitch:+.1f} deg" if roll is not None and pitch is not None else "")
             bus.log(f"pre-flight: bat {'?' if vb is None else f'{vb:.2f} V'}  supervisor["
-                    f"{'?' if info is None else hop.decode_info(info)}]")
+                    f"{'?' if info is None else hop.decode_info(info)}]{level}")
         if info is not None and info & (hop.BIT_CRASHED | hop.BIT_IS_LOCKED | hop.BIT_IS_TUMBLED):
             return f"supervisor: {hop.decode_info(info)}"
+        if roll is not None and pitch is not None and max(abs(roll), abs(pitch)) > m.cfg.max_tilt_deg:
+            # a drone that booted tilted (or sits on a cable) has a wrong attitude zero and flies sideways
+            return f"not level: roll {roll:+.1f} pitch {pitch:+.1f} deg (max {m.cfg.max_tilt_deg:g})"
         vbat = sup.vbat if sup.vbat is not None else fl.telemetry.battery_v
     else:
         vbat = fl.telemetry.battery_v
@@ -249,6 +257,7 @@ class Mission:
         self.alarm_exit = "A"
         self.active_path: Optional[str] = None
         self.link_lost = False
+        self.estimator_ready = False          # set by _estimator_manager after a successful reset with heading
         self.in_flight = False                       # between preflight pass and touchdown/stop
         self._pending_relaunch: Optional[paths.Path] = None
         self._current_path: Optional[paths.Path] = None
@@ -326,17 +335,23 @@ class Mission:
     def _estimator_manager(self) -> None:  # pragma: no cover - thread; the reset itself is Flight's
         while not self._shutdown.is_set():
             st = self.tracker.get_state()
+            if self.link_lost:
+                self._shutdown.wait(1.0)
+                continue
             if st is not None and st.tracking_ok and st.xyz is not None:
                 self.sleep(0.5)                         # let a few extpos packets in first
                 try:
                     self.fl.setup_estimator()
                     yaw = self.fl.last_initial_yaw_rad
+                    self.estimator_ready = True
                     self.bus.log("tracker locked: estimator reset with camera position"
                                  + (f", heading {math.degrees(yaw):+.0f} deg" if yaw is not None
                                     else ", heading unknown (left at 0)"))
+                    return
                 except Exception as exc:  # noqa: BLE001
-                    self.bus.log(f"estimator setup failed: {exc!r}")
-                return
+                    self.bus.log(f"estimator setup failed: {exc!r}; retrying in 5 s")
+                    self._shutdown.wait(5.0)
+                    continue
             self._shutdown.wait(0.2)
 
     def _publish_loop(self) -> None:  # pragma: no cover - timing loop; publish() is tested
@@ -861,6 +876,8 @@ def telemetry_dict(m) -> dict:
                                                                     and m.supervisor.info is not None) else None),
         "supervisor_vbat": (float(m.supervisor.vbat) if (getattr(m, "supervisor", None) is not None
                                                           and m.supervisor.vbat is not None) else None),
+        "roll_deg": (float(m.supervisor.roll_deg) if getattr(getattr(m, "supervisor", None), "roll_deg", None) is not None else None),
+        "pitch_deg": (float(m.supervisor.pitch_deg) if getattr(getattr(m, "supervisor", None), "pitch_deg", None) is not None else None),
     }
 
 

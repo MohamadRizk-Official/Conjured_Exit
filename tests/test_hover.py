@@ -105,7 +105,22 @@ class SupervisorWatchTests(unittest.TestCase):
         self.assertEqual(conf.started, 2)
         self.assertEqual(conf.stopped, 2)
         self.assertFalse(sw.running)
-        self.assertEqual([v[0] for v in conf.vars], ["supervisor.info", "pm.vbat"])
+        self.assertEqual([v[0] for v in conf.vars], ["supervisor.info", "pm.vbat", "stabilizer.roll", "stabilizer.pitch"])
+
+    def test_roll_and_pitch_are_decoded_for_the_level_check(self):
+        cf = flight.FakeCrazyflie()
+        cf.log.add_config = mock.Mock()
+        conf = _FakeConf()
+        with mock.patch("hover.flight.make_log_config", return_value=conf):
+            sw = hover.SupervisorWatch(cf)
+            sw.start()
+        self.assertIsNone(sw.roll_deg)
+        cb = conf.data_received_cb.add_callback.call_args[0][0]
+        cb(0, {"supervisor.info": 5, "pm.vbat": 4.0, "stabilizer.roll": 3.5, "stabilizer.pitch": -1.0}, None)
+        self.assertAlmostEqual(sw.roll_deg, 3.5)
+        self.assertAlmostEqual(sw.pitch_deg, -1.0)
+        self.assertAlmostEqual(sw.tilt_deg, 3.5)
+        self.assertIn("level", sw.line())
 
 
 if __name__ == "__main__":

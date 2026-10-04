@@ -126,9 +126,11 @@ class RouteRecorderTests(unittest.TestCase):
 
 
 class FakeSupervisor:
-    def __init__(self, info=hop.BIT_CAN_BE_ARMED | hop.BIT_CAN_FLY, vbat=4.0):
+    def __init__(self, info=hop.BIT_CAN_BE_ARMED | hop.BIT_CAN_FLY, vbat=4.0, roll_deg=0.0, pitch_deg=0.0):
         self.info = info
         self.vbat = vbat
+        self.roll_deg = roll_deg
+        self.pitch_deg = pitch_deg
         self.starts = 0
         self.stops = 0
 
@@ -216,6 +218,26 @@ class PreflightTests(unittest.TestCase):
         m, _, _ = make_pre(sup=FakeSupervisor(vbat=3.6))
         self.assertTrue(preflight(m).startswith("battery"))
 
+    def test_tilted_drone_refuses(self):
+        """A drone that booted on its side, or sits on a cable, has a wrong attitude zero: do not fly it."""
+        m, _, _ = make_pre(sup=FakeSupervisor(roll_deg=12.0))
+        reason = preflight(m)
+        self.assertTrue(reason.startswith("not level"), reason)
+        self.assertIn("+12.0", reason)
+        self.assertAlmostEqual(MissionConfig().max_tilt_deg, 5.0)
+
+    def test_small_tilt_passes(self):
+        m, _, _ = make_pre(sup=FakeSupervisor(roll_deg=2.0, pitch_deg=-3.0))
+        self.assertIsNone(preflight(m))
+
+    def test_estimator_never_set_up_refuses(self):
+        """04:35: the reset ran against an empty TOC and failed; the flight must not go on a stale estimator."""
+        m, _, _ = make_pre()
+        m.estimator_ready = False
+        self.assertTrue(preflight(m).startswith("estimator not set up"))
+        m.estimator_ready = True
+        self.assertIsNone(preflight(m))
+
     def test_preflight_logs_the_supervisor_line(self):
         m, _, _ = make_pre(sup=FakeSupervisor(info=hop.BIT_CAN_BE_ARMED | hop.BIT_CAN_FLY, vbat=4.0))
         m.bus = StateBus()
@@ -243,6 +265,7 @@ def make_mission(tmpdir, *, armed=False, cf=None, tracker_kwargs=None, superviso
                 flight_cfg=fcfg, supervisor=supervisor, sim=True, clock=clock, sleep=clock.sleep,
                 inline_flights=inline)
     m.fl.telemetry = converged_telemetry(0.0, 0.0, 0.3)
+    m.estimator_ready = True            # the estimator-manager thread is not started in these tests
     if armed:
         m.handle(Command("arm", {"on": True}))
     return m, cf, bus, q, store, clock, tr
@@ -663,6 +686,8 @@ class TelemetryDictTests(unittest.TestCase):
         d = telemetry_dict(m)
         self.assertIn("CRASHED", d["supervisor"])
         self.assertAlmostEqual(d["supervisor_vbat"], 3.95)
+        self.assertAlmostEqual(d["roll_deg"], 0.0)                # level check inputs are visible
+        self.assertAlmostEqual(d["pitch_deg"], 0.0)
 
     def test_telemetry_dict_with_no_samples(self):
         import json
