@@ -96,7 +96,7 @@ class Simulator(threading.Thread):
         self.leg_t = 0.0
         self.after_leg = "flying"
         self.hover_t = 0.0
-        self.hover_dur = 8.0
+        self.hover_dur = 15.0
 
         # recording
         self.rec_active = False

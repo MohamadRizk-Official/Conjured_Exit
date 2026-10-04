@@ -82,7 +82,7 @@ class FakePlatform:
 
 class FakeParam:
     # a minimal TOC so toc_names.resolve() finds the names flight.py sets
-    toc = {"stabilizer": {"estimator": 143}, "kalman": {"resetEstimation": 116},
+    toc = {"stabilizer": {"estimator": 143}, "kalman": {"resetEstimation": 116, "initialYaw": 117},
            "locSrv": {"extPosStdDev": 107, "extQuatStdDev": 108}}
 
     def __init__(self) -> None:
@@ -704,6 +704,86 @@ class BatterySagTests(unittest.TestCase):
         self.assertIsNotNone(m, fl.last_abort_reason)
         self.assertAlmostEqual(float(m.group(1)), 4.10)
         self.assertLess(float(m.group(2)), 3.5)
+
+
+class HeadingAlignmentTests(unittest.TestCase):
+    """The drone's gyro only knows heading CHANGES; its zero is whatever kalman.initialYaw says at the reset.
+    Without this the position controller pushes in a rotated direction and the drone slides sideways
+    (2026-10-04 03:51: north-west at 8 cm instead of straight up)."""
+
+    def test_setup_estimator_sets_initial_yaw_from_the_marker_before_the_reset(self):
+        clock = FakeClock()
+        tracker = FakeTracker(clock, xyz=(0.3, 0.0, 0.06), yaw=0.5)
+        fl, cf = make_flight(clock, tracker=tracker, telemetry=converged_telemetry())
+        fl.setup_estimator()
+        keys = list(cf.param.values)
+        self.assertIn("kalman.initialYaw", keys)
+        self.assertAlmostEqual(float(cf.param.values["kalman.initialYaw"]), 0.5, places=4)
+        self.assertLess(keys.index("kalman.initialYaw"), keys.index("kalman.resetEstimation"))
+        self.assertEqual(cf.param.values["kalman.resetEstimation"], "0")          # reset issued (1 then 0)
+        self.assertAlmostEqual(fl.last_initial_yaw_rad, 0.5, places=4)
+
+    def test_marker_offset_turns_marker_yaw_into_nose_heading(self):
+        clock = FakeClock()
+        tracker = FakeTracker(clock, xyz=(0.3, 0.0, 0.06), yaw=0.5)
+        fl, cf = make_flight(clock, tracker=tracker, telemetry=converged_telemetry(), marker_yaw_offset_deg=90.0)
+        fl.setup_estimator()
+        self.assertAlmostEqual(float(cf.param.values["kalman.initialYaw"]), 0.5 + math.pi / 2, places=4)
+
+    def test_heading_is_wrapped_into_minus_pi_pi(self):
+        clock = FakeClock()
+        tracker = FakeTracker(clock, xyz=(0.3, 0.0, 0.06), yaw=3.0)
+        fl, cf = make_flight(clock, tracker=tracker, telemetry=converged_telemetry(), marker_yaw_offset_deg=90.0)
+        fl.setup_estimator()
+        self.assertAlmostEqual(float(cf.param.values["kalman.initialYaw"]), 3.0 + math.pi / 2 - 2 * math.pi, places=4)
+
+    def test_no_heading_available_leaves_initial_yaw_alone(self):
+        clock = FakeClock()
+        tracker = FakeTracker(clock, xyz=(0.3, 0.0, 0.06), yaw=None)
+        fl, cf = make_flight(clock, tracker=tracker, telemetry=converged_telemetry())
+        fl.setup_estimator()
+        self.assertNotIn("kalman.initialYaw", cf.param.values)
+        self.assertEqual(cf.param.values["kalman.resetEstimation"], "0")
+        self.assertIsNone(fl.last_initial_yaw_rad)
+
+    def test_firmware_without_initial_yaw_param_still_resets(self):
+        clock = FakeClock()
+        tracker = FakeTracker(clock, xyz=(0.3, 0.0, 0.06), yaw=0.5)
+        fl, cf = make_flight(clock, tracker=tracker, telemetry=converged_telemetry())
+        cf.param.toc = {"stabilizer": {"estimator": 143}, "kalman": {"resetEstimation": 116}}
+        fl.setup_estimator()
+        self.assertNotIn("kalman.initialYaw", cf.param.values)
+        self.assertEqual(cf.param.values["kalman.resetEstimation"], "0")
+
+
+class TakeoffDriftGuardTests(unittest.TestCase):
+    """A drone that slides sideways during the ramp has a heading or estimate problem: cut it early."""
+
+    def test_sideways_drift_during_ramp_triggers_blind_descent(self):
+        clock = FakeClock()
+
+        class SlidingTracker(FakeTracker):
+            def get_state(self):
+                st = super().get_state()
+                st.xyz = (0.3 + 0.05 * self.calls, 0.0, 0.06)        # 5 cm sideways per poll, no climb
+                return st
+
+        tracker = SlidingTracker(clock, xyz=(0.3, 0.0, 0.06))
+        fl, cf = make_flight(clock, tracker=tracker, telemetry=converged_telemetry(0.3, 0.0, 0.06),
+                             takeoff_time_s=2.0, hover_time_s=0.5, takeoff_height=0.6, takeoff_max_drift_m=0.4)
+        self.assertFalse(fl.takeoff())
+        self.assertIn("sideways", fl.last_abort_reason)
+        self.assertEqual(fl.state, "estop")
+        self.assertGreaterEqual(len(cf.commander.rpyt), 40)         # blind descent ran
+        self.assertLess(len(cf.commander.setpoints), 40)             # the 2 s ramp was cut short
+
+    def test_guard_off_by_default_and_quiet_when_the_drone_stays_put(self):
+        clock = FakeClock()
+        tracker = FakeTracker(clock, xyz=(0.3, 0.0, 0.06))
+        fl, cf = make_flight(clock, tracker=tracker, telemetry=converged_telemetry(0.3, 0.0, 0.06),
+                             takeoff_time_s=1.0, hover_time_s=0.5, takeoff_max_drift_m=0.4)
+        self.assertTrue(fl.takeoff())
+        self.assertEqual(flight.FlightConfig().takeoff_max_drift_m, 0.0)
 
 
 if __name__ == "__main__":

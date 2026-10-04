@@ -630,6 +630,15 @@ class NanTrackerTests(unittest.TestCase):
         self.assertEqual(s["drone"]["yaw"], 0.0)
 
 
+class HoverDefaultsTests(unittest.TestCase):
+    """The page's HOVER TEST button sends no arguments: these defaults are what it flies."""
+
+    def test_hover_test_defaults(self):
+        cfg = MissionConfig()
+        self.assertAlmostEqual(cfg.hover_height_m, 0.6)      # higher leaves the camera frame (03:47 rig: ~0.7 m max)
+        self.assertAlmostEqual(cfg.hover_hold_s, 15.0)
+
+
 class TelemetryDictTests(unittest.TestCase):
     def test_telemetry_dict_reports_estimator_numbers(self):
         import json
@@ -646,6 +655,7 @@ class TelemetryDictTests(unittest.TestCase):
         self.assertIn("feed", d)
         self.assertIn("camera_xyz", d)
         self.assertIn("battery_min_v", d)                 # lowest voltage seen under load
+        self.assertIn("camera_yaw_deg", d)                # marker heading the estimator reset will use
         self.assertIsNone(d["supervisor"])                 # no supervisor watch in sim
         m.supervisor = FakeSupervisor(info=hop.BIT_CRASHED | hop.BIT_CAN_BE_ARMED, vbat=3.95)
         d = telemetry_dict(m)

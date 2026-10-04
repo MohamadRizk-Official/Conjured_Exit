@@ -115,7 +115,7 @@ COMMAND_SPECS: dict[str, tuple[tuple[str, ...], str]] = {
     "stop": ((), "EMERGENCY STOP: motors off immediately"),
     "clear_alarm": ((), "reset alarm, blocked exits and e-stop; back to idle"),
     "arm": (("on",), "arm (true) or disarm (false) the drone; alarm/cast fly only while armed"),
-    "hover": ((), "hover test: take off to ~0.6 m, hold 8 s, land (optional args height_m, seconds)"),
+    "hover": ((), "hover test: take off to ~0.6 m, hold 15 s, land (optional args height_m, seconds)"),
     "select_path": (("name",), "highlight / preview a stored path without flying"),
     "set_source": (("source",), "feed the UI from 'sim' (fake drone) or 'live' (real link); 'none' = nobody"),
 }

@@ -129,7 +129,9 @@ class FlightConfig:
     estop_repeats: int = 3
     blind_descent_thrust: tuple = (40000, 34000)  # tracking lost in flight: thrust-only steps (16-bit, hover ~40000)
     blind_descent_step_s: float = 1.0             # seconds per step, then motors off
-    takeoff_min_rise_frac: float = 0.0           # >0: abort (motors off) if the measured rise after the ramp
+    takeoff_min_rise_frac: float = 0.0
+    takeoff_max_drift_m: float = 0.0                  # abort the ramp when the camera sees > this much xy drift (0 = off)
+    marker_yaw_offset_deg: float = 0.0                # nose heading relative to the marker's top edge (CCW positive)           # >0: abort (motors off) if the measured rise after the ramp
                                                   # is below this fraction of the commanded climb (mission uses 0.4)
 
 
@@ -212,6 +214,8 @@ class Flight:
         self.cf = cf
         self.cfg = cfg or FlightConfig()
         self.tracker = tracker
+        self.last_initial_yaw_rad: Optional[float] = None   # what the last estimator reset told the drone
+        self._takeoff_origin: Optional[tuple[float, float]] = None
         self.telemetry = telemetry or Telemetry(self.cfg.converge_window, self.cfg.converge_var_threshold)
         self.commands = commands          # callable returning the next command name ("stop", "land") or None
         self.clock = clock
@@ -258,6 +262,18 @@ class Flight:
         toc = self.cf.param.toc
         self.cf.param.set_value(resolve_name(toc, "stabilizer.estimator"), "2")
         self.sleep(0.1)
+        # The gyro only integrates heading CHANGES; the reset takes its zero from kalman.initialYaw.
+        # Position-only extpos never corrects yaw, so a wrong zero rotates every controller output
+        # (2026-10-04 03:51: the drone slid north-west at 8 cm instead of climbing).
+        self.last_initial_yaw_rad = None
+        heading = self.marker_heading_rad()
+        if heading is not None:
+            try:
+                self.cf.param.set_value(resolve_name(toc, "kalman.initialYaw"), f"{heading:.4f}")
+                self.last_initial_yaw_rad = heading
+                log.info("estimator reset: initial yaw %.1f deg from the marker", math.degrees(heading))
+            except KeyError as e:
+                log.warning("kalman.initialYaw not in this firmware's TOC (%s); heading left at 0", e)
         reset = resolve_name(toc, "kalman.resetEstimation")
         self.cf.param.set_value(reset, "1")
         self.sleep(0.1)
@@ -354,6 +370,14 @@ class Flight:
                     self._lost_since = None
                     self.blind_descent()
                     raise FlightAborted(f"tracking lost > {self.cfg.tracking_lost_land_s} s: blind descent, motors off")
+        if self.state == "takeoff" and self.cfg.takeoff_max_drift_m > 0 and self._takeoff_origin is not None:
+            xyz = self._tracker_xyz()
+            if xyz is not None:
+                drift = math.hypot(xyz[0] - self._takeoff_origin[0], xyz[1] - self._takeoff_origin[1])
+                if drift > self.cfg.takeoff_max_drift_m:
+                    self.blind_descent()
+                    raise FlightAborted(f"drifted {drift:.2f} m sideways during take-off (heading mismatch?): "
+                                        f"blind descent, motors off")
 
     def _clamp(self, x: float, y: float, z: float, floor_ok: bool) -> tuple[float, float, float]:
         box = self.cfg.geofence
@@ -380,6 +404,26 @@ class Flight:
             if nxt > now:
                 self.sleep(nxt - now)
 
+    def _tracker_xyz(self) -> Optional[tuple[float, float, float]]:
+        if self.tracker is None:
+            return None
+        st = self.tracker.get_state()
+        if st is None or not st.tracking_ok or st.xyz is None:
+            return None
+        return (float(st.xyz[0]), float(st.xyz[1]), float(st.xyz[2]))
+
+    def marker_heading_rad(self) -> Optional[float]:
+        """The drone's nose heading in the world frame: the marker's top-edge yaw plus
+        cfg.marker_yaw_offset_deg, wrapped to (-pi, pi]. None when the tracker has no yaw."""
+        if self.tracker is None:
+            return None
+        st = self.tracker.get_state()
+        yaw = getattr(st, "yaw", None) if st is not None else None
+        if yaw is None or not math.isfinite(float(yaw)):
+            return None
+        h = float(yaw) + math.radians(self.cfg.marker_yaw_offset_deg)
+        return math.atan2(math.sin(h), math.cos(h))
+
     def _measured_height(self) -> Optional[float]:
         """Height from the tracker when it has a fix, else from the drone's own estimate."""
         if self.tracker is not None:
@@ -400,6 +444,7 @@ class Flight:
         """Arm, ramp up at the current xy, hover. Returns True when hovering, False if aborted."""
         self._refuse_if_unsafe()
         x, y, z0 = self._start_position()
+        self._takeoff_origin = (float(x), float(y))
         self.last_abort_reason = ""
         if self.cfg.arm:
             self.cf.platform.send_arming_request(True)

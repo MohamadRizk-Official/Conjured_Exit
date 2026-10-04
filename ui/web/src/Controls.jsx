@@ -138,11 +138,11 @@ export default function Controls({ state, send }) {
           <button
             className={`btn hover ${armed ? '' : 'disarmed'}`}
             disabled={airborne}
-            onClick={() => send('hover', { height_m: 0.6, seconds: 8 })}
-            title="Take off, hold 0.6 m for 8 s, land. Needs ARMED."
+            onClick={() => send('hover')}
+            title="Take off, hold 0.6 m for 15 s, land. Needs ARMED."
           >
             HOVER TEST
-            <small>0.6 m, 8 s, lands by itself</small>
+            <small>0.6 m, 15 s, lands by itself</small>
           </button>
           <button className="btn land" onClick={() => send('land')} disabled={!airborne}>
             LAND

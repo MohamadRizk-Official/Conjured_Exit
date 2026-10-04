@@ -199,8 +199,12 @@ Rules that keep the one battery and the few spare propellers alive:
 * The supervisor often boots in a "crashed" state; a crash-recovery request clears it before
   arming. The complementary estimator reports altitude above sea level, so flights use the Kalman
   estimator with a reset and external position.
-* Position only goes into the drone (heading comes from its gyro), so flights start with the nose
-  along +x and stay under a minute.
+* Position only goes into the drone; its heading comes from the gyro, which only knows heading
+  changes. Every estimator reset therefore sets `kalman.initialYaw` from the camera-measured marker
+  heading (plus `DRONE_MARKER_YAW_OFFSET_DEG` when the marker is not taped top-edge-to-nose). Without
+  it the position controller pushes in a rotated direction and the drone slides sideways instead of
+  climbing (4 October, 03:51). A take-off that drifts more than 0.4 m sideways is cut with a blind
+  descent. Flights stay under a minute.
 
 ## Tracker
 

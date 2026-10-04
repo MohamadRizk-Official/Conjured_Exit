@@ -44,8 +44,8 @@ class MissionConfig:
     publish_hz: float = 20.0
     record_hz: float = 30.0
     relaunch_delay_s: float = 2.0          # touchdown -> relaunch on the other exit
-    hover_height_m: float = 0.6            # 'hover' command defaults (page button: 0.6 m, 8 s)
-    hover_hold_s: float = 8.0
+    hover_height_m: float = 0.6            # 'hover' command defaults (the page button sends no args)
+    hover_hold_s: float = 15.0             # 0.6 m: with the camera 1.3 m up / 1.7 m away, ~0.7 m is the frame's top
     agree_tol_m: float = 0.2               # estimator vs camera before takeoff
     min_battery_v: float = 3.7
     ext_std: Optional[float] = 0.05        # locSrv.extPosStdDev; None = leave the drone's value
@@ -327,7 +327,10 @@ class Mission:
                 self.sleep(0.5)                         # let a few extpos packets in first
                 try:
                     self.fl.setup_estimator()
-                    self.bus.log("tracker locked: estimator reset with camera position")
+                    yaw = self.fl.last_initial_yaw_rad
+                    self.bus.log("tracker locked: estimator reset with camera position"
+                                 + (f", heading {math.degrees(yaw):+.0f} deg" if yaw is not None
+                                    else ", heading unknown (left at 0)"))
                 except Exception as exc:  # noqa: BLE001
                     self.bus.log(f"estimator setup failed: {exc!r}")
                 return
@@ -794,6 +797,8 @@ def telemetry_dict(m) -> dict:
         "link_lost": bool(m.link_lost),
         "feed": m.feed.status(),
         "camera_xyz": cam,
+        "camera_yaw_deg": (math.degrees(float(st.yaw)) if (st is not None and getattr(st, "yaw", None) is not None
+                                                           and math.isfinite(float(st.yaw))) else None),
         "camera_vs_estimate_m": (max(abs(pos[i] - cam[i]) for i in range(3)) if cam else None),
         "tracking_ok": bool(st is not None and getattr(st, "tracking_ok", False)),
         "supervisor": (hop.decode_info(int(m.supervisor.info)) if (getattr(m, "supervisor", None) is not None
@@ -867,7 +872,9 @@ def main(argv: list[str] | None = None) -> int:
         tracker = mission_sim.SimDroneTracker(cf)
         mission = Mission(cf, tracker, store, cfg=cfg, sim=True,
                           flight_cfg=flight.FlightConfig(takeoff_time_s=4.0, takeoff_min_rise_frac=0.4,
-                                                         setpoint_hz=config.SETPOINT_RATE_HZ))
+                                                         setpoint_hz=config.SETPOINT_RATE_HZ,
+                                                         takeoff_max_drift_m=config.TAKEOFF_MAX_DRIFT_M,
+                                                         marker_yaw_offset_deg=config.DRONE_MARKER_YAW_OFFSET_DEG))
         feeder = mission_sim.SimTelemetry(mission.fl, cf).start()
         print("[mission] SIM: fake drone, demo paths (exit_a, exit_b, spiral, square)")
     else:
@@ -880,7 +887,9 @@ def main(argv: list[str] | None = None) -> int:
         cf = flight.connect(uri)
         mission = Mission(cf, tracker, store, cfg=cfg,
                           flight_cfg=flight.FlightConfig(link_uri=uri, takeoff_time_s=4.0, takeoff_min_rise_frac=0.4,
-                                                         setpoint_hz=config.SETPOINT_RATE_HZ),
+                                                         setpoint_hz=config.SETPOINT_RATE_HZ,
+                                                         takeoff_max_drift_m=config.TAKEOFF_MAX_DRIFT_M,
+                                                         marker_yaw_offset_deg=config.DRONE_MARKER_YAW_OFFSET_DEG),
                           supervisor=hover.SupervisorWatch(cf))
         print(f"[mission] connected; tracker={args.tracker}; paths: {', '.join(store.names()) or 'none yet'}")
 

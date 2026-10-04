@@ -31,6 +31,16 @@ BLE_STREAM_PORTS = ()
 EXTPOS_RATE_HZ = 15.0
 SETPOINT_RATE_HZ = 15.0
 
+# Heading: the drone's gyro only knows heading changes, so every estimator reset tells it where its
+# nose points (kalman.initialYaw) from the drone marker's top-edge yaw seen by the camera, plus this
+# offset (degrees, counter-clockwise positive) when the marker is not taped with its top edge at the nose.
+# To measure it: put the drone with its nose exactly along the floor sheet's top edge, read camera_yaw_deg
+# from /api/telemetry, and set the NEGATIVE of that reading here.
+DRONE_MARKER_YAW_OFFSET_DEG = 0.0
+# Take-off guard: the camera seeing more than this much sideways drift during the ramp means the heading
+# or the estimate is wrong; the flight is cut with a blind descent.
+TAKEOFF_MAX_DRIFT_M = 0.4
+
 # Safety (flight.py). Non-negotiable values from README.md.
 TRACKING_LOST_LAND_S = 0.3      # tracking lost longer than this -> land
 REPLAY_SPEED_MPS = 0.3          # fixed slow replay speed
