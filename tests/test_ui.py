@@ -367,6 +367,19 @@ class StateBusTests(unittest.TestCase):
 # -------------------------------------------------------------- command queue
 
 
+class NanSafetyTests(unittest.TestCase):
+    def test_snapshot_never_contains_nan_or_inf(self):
+        bus = StateBus()
+        bus.update(drone={"x": float("nan"), "y": float("inf"), "z": 0.3, "yaw": float("-inf")},
+                   tracking={"fps": float("nan")})
+        snap = bus.snapshot_dict()
+        json.dumps(snap, allow_nan=False)                      # what the HTTP/WebSocket layer does
+        self.assertEqual(snap["drone"]["x"], 0.0)
+        self.assertEqual(snap["drone"]["y"], 0.0)
+        self.assertEqual(snap["drone"]["z"], 0.3)
+        self.assertEqual(snap["tracking"]["fps"], 0.0)
+
+
 class CommandQueueTests(unittest.TestCase):
     def test_round_trip(self):
         q = CommandQueue()

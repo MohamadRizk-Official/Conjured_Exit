@@ -17,6 +17,10 @@ LINK_URI = os.environ.get("PATHCASTER_LINK_URI", f"ble://{DRONE_BLE_ADDRESS}")
 # pump 100 Hz the parameter download runs at ~10 params/s (30 s for 310 params).
 BLE_PUMP_HZ = 100.0          # null packets per second when idle (keeps the downlink flowing)
 BLE_FAST_INTERVAL = True     # ask Windows 11 for the 15 ms connection interval
+# CRTP ports written WITHOUT response (fire and forget). Port 6 (external position) is deliberately
+# NOT in the list: a dropped or mangled position packet corrupts the drone's Kalman filter, so those go
+# write-with-response (reliable, serialized). Setpoints (3) stay fire-and-forget.
+BLE_STREAM_PORTS = (3, 7, 8)
 
 # Position feed (feed.py): external position rate into the onboard Kalman filter.
 EXTPOS_RATE_HZ = 30.0

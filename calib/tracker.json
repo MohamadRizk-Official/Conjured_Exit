@@ -51,7 +51,7 @@
   "aruco_id": 0,
   "marker_size_m": 0.15,
   "drone_marker_id": 1,
-  "drone_marker_size_m": 0.05,
+  "drone_marker_size_m": 0.07,
   "wand_marker_id": 2,
   "wand_marker_size_m": 0.05,
   "aruco_camera": 1,

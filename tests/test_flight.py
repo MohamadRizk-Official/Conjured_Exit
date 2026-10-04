@@ -43,6 +43,11 @@ class FakeCommander:
     def send_notify_setpoint_stop(self, remain_valid_milliseconds=0):
         self.notify_stops += 1
 
+    def send_setpoint(self, roll, pitch, yawrate, thrust):
+        if not hasattr(self, "rpyt"):
+            self.rpyt = []
+        self.rpyt.append((roll, pitch, yawrate, thrust))
+
 
 class FakeLoc:
     def __init__(self) -> None:
@@ -263,9 +268,13 @@ class FlyPathTests(unittest.TestCase):
         ok = self.fl.fly_path(self.path)
         self.assertFalse(ok)
         self.assertIn("tracking", self.fl.last_abort_reason)
-        self.assertLessEqual(self.cf.commander.setpoints[-1][2], self.fl.cfg.land_cutoff_z + 1e-9)
+        rpyt = self.cf.commander.rpyt
+        self.assertGreaterEqual(len(rpyt), 40)                       # 2 steps x 1 s of thrust-only setpoints at 20 Hz
+        self.assertTrue(all(r[0] == 0 and r[1] == 0 for r in rpyt))  # level, no position control
+        self.assertEqual(rpyt[0][3], 0)                              # thrust unlock first
+        self.assertEqual(rpyt[-1][3], 0)                             # zero thrust at the end
         self.assertGreaterEqual(self.cf.commander.stops, 1)
-        self.assertEqual(self.fl.state, "idle")
+        self.assertEqual(self.fl.state, "estop")                     # needs a clear before the next flight
         # it did not fly the whole route
         self.assertLess(len(self.cf.commander.setpoints), 0.5 * self.path.duration * 20)
 
@@ -444,8 +453,127 @@ class HoldTests(unittest.TestCase):
         self.assertTrue(fl.takeoff())
         self.assertFalse(fl.hold(5.0))
         self.assertIn("tracking lost", fl.last_abort_reason)
-        self.assertEqual(fl.state, "idle")
+        self.assertEqual(fl.state, "estop")
+        self.assertGreaterEqual(len(cf.commander.rpyt), 40)
         self.assertGreaterEqual(cf.commander.stops, 1)
+
+
+class FeedSanityTests(unittest.TestCase):
+    """A NaN/inf/absurd position from the tracker must never reach the drone's estimator."""
+
+    def _feed_with(self, xyz):
+        clock = FakeClock()
+        tracker = FakeTracker(clock, xyz=xyz)
+        cf = FakeCF()
+        from feed import PositionFeed
+        return PositionFeed(cf, tracker, clock=clock, sleep=clock.sleep), cf
+
+    def test_nan_position_is_skipped(self):
+        pf, cf = self._feed_with((float("nan"), 0.0, 0.3))
+        self.assertFalse(pf.tick())
+        self.assertEqual(cf.extpos.positions, [])
+        self.assertEqual(pf.skipped, 1)
+        self.assertEqual(pf.rejected, 1)
+
+    def test_inf_and_absurd_positions_are_skipped(self):
+        for bad in ((0.0, float("inf"), 0.3), (0.0, 0.0, 1e6), (25.0, 0.0, 0.3)):
+            pf, cf = self._feed_with(bad)
+            self.assertFalse(pf.tick(), bad)
+            self.assertEqual(cf.extpos.positions, [], bad)
+
+    def test_normal_position_still_goes_through(self):
+        pf, cf = self._feed_with((0.3, -0.1, 0.5))
+        self.assertTrue(pf.tick())
+        self.assertEqual(cf.extpos.positions, [(0.3, -0.1, 0.5)])
+        self.assertEqual(pf.rejected, 0)
+        self.assertIn("rejected 0", pf.status())
+
+
+class LiftGuardTests(unittest.TestCase):
+    """With takeoff_min_rise_frac > 0 the take-off aborts (motors off) when the drone does not rise."""
+
+    def test_takeoff_aborts_when_drone_does_not_rise(self):
+        clock = FakeClock()
+        tracker = FakeTracker(clock, xyz=(0.0, 0.0, 0.05))          # stays on the floor
+        fl, cf = make_flight(clock, tracker=tracker, telemetry=converged_telemetry(0.0, 0.0, 0.05),
+                             takeoff_time_s=1.0, hover_time_s=0.5, takeoff_height=0.6, takeoff_min_rise_frac=0.4)
+        self.assertFalse(fl.takeoff())
+        self.assertIn("did not lift", fl.last_abort_reason)
+        self.assertEqual(cf.loc.emergency_stops, 0)          # a soft stop: the drone must stay armable
+        self.assertGreaterEqual(cf.commander.stops, 3)
+        self.assertEqual(fl.state, "estop")
+        self.assertAlmostEqual(len(cf.commander.setpoints), 20, delta=1)   # the ramp only, no hover
+
+    def test_takeoff_continues_when_drone_rises(self):
+        clock = FakeClock()
+
+        class RisingTracker(FakeTracker):
+            def get_state(self):
+                st = super().get_state()
+                st.xyz = (0.0, 0.0, min(0.6, 0.05 + 0.03 * self.calls))   # climbs 3 cm per poll
+                return st
+
+        tracker = RisingTracker(clock, xyz=(0.0, 0.0, 0.05))
+        fl, cf = make_flight(clock, tracker=tracker, telemetry=converged_telemetry(0.0, 0.0, 0.05),
+                             takeoff_time_s=1.0, hover_time_s=0.5, takeoff_height=0.6, takeoff_min_rise_frac=0.4)
+        self.assertTrue(fl.takeoff())
+        self.assertEqual(fl.state, "hover")
+        self.assertEqual(cf.loc.emergency_stops, 0)
+
+    def test_guard_off_by_default(self):
+        clock = FakeClock()
+        tracker = FakeTracker(clock, xyz=(0.0, 0.0, 0.05))
+        fl, cf = make_flight(clock, tracker=tracker, telemetry=converged_telemetry(0.0, 0.0, 0.05),
+                             takeoff_time_s=1.0, hover_time_s=0.5)
+        self.assertTrue(fl.takeoff())
+
+
+class BlindDescentTests(unittest.TestCase):
+    """Tracking lost in the air: descend on attitude + thrust only (no position estimate needed), then motors off."""
+
+    def test_sequence_unlock_two_thrust_steps_then_off(self):
+        clock = FakeClock()
+        fl, cf = make_flight(clock, telemetry=converged_telemetry(), takeoff_time_s=1.0, hover_time_s=0.5,
+                             blind_descent_thrust=(40000, 34000), blind_descent_step_s=1.0)
+        self.assertTrue(fl.takeoff())
+        n0 = len(cf.commander.rpyt)                      # the take-off unlock packets
+        fl.blind_descent()
+        rpyt = cf.commander.rpyt[n0:]
+        self.assertEqual(rpyt[0], (0.0, 0.0, 0.0, 0))
+        self.assertEqual([r[3] for r in rpyt[1:21]], [40000] * 20)
+        self.assertEqual([r[3] for r in rpyt[21:41]], [34000] * 20)
+        self.assertEqual(rpyt[-1][3], 0)
+        self.assertEqual(cf.commander.stops, 1)
+        self.assertEqual(fl.state, "estop")
+
+    def test_stop_request_during_descent_cuts_motors_at_once(self):
+        clock = FakeClock()
+        fl, cf = make_flight(clock, telemetry=converged_telemetry(), takeoff_time_s=1.0, hover_time_s=0.5)
+        self.assertTrue(fl.takeoff())
+        fl.request_stop()
+        fl.blind_descent()
+        self.assertEqual(cf.loc.emergency_stops, 3)
+        self.assertLess(len(cf.commander.rpyt), 8)
+        self.assertEqual(fl.state, "estop")
+
+
+class ThrustUnlockTests(unittest.TestCase):
+    """Like the first flight that worked (hop.py): three zero-thrust packets right before the climb."""
+
+    def test_takeoff_sends_three_zero_thrust_packets_before_the_ramp(self):
+        clock = FakeClock()
+        fl, cf = make_flight(clock, telemetry=converged_telemetry(), takeoff_time_s=1.0, hover_time_s=0.5)
+        self.assertTrue(fl.takeoff())
+        self.assertEqual(cf.commander.rpyt[:3], [(0, 0, 0, 0)] * 3)
+        self.assertEqual(len(cf.commander.rpyt), 3)
+        self.assertEqual(cf.platform.arming, [True])
+
+    def test_unlock_can_be_disabled(self):
+        clock = FakeClock()
+        fl, cf = make_flight(clock, telemetry=converged_telemetry(), takeoff_time_s=1.0, hover_time_s=0.5,
+                             thrust_unlock=False)
+        self.assertTrue(fl.takeoff())
+        self.assertFalse(hasattr(cf.commander, "rpyt"))
 
 
 if __name__ == "__main__":

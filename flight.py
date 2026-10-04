@@ -11,7 +11,7 @@ Decisions (README.md, 2026-10-03):
   * Connect once per session (`connect()`), TOC cache on, keep the link alive.
 
 Safety rules (non-negotiable): every target is clamped into paths.GEOFENCE (takeoff/landing
-ramps may go below the geofence floor); tracking lost > 0.3 s -> land; spacebar or the "stop"
+ramps may go below the geofence floor); tracking lost > 0.3 s -> blind descent (thrust only, no position), motors off; spacebar or the "stop"
 command -> emergency stop; takeoff is refused until the estimator converged and tracking is ok.
 
 Desk check over BLE, motors never spin:
@@ -125,7 +125,12 @@ class FlightConfig:
     geofence: paths.Box = paths.GEOFENCE
     yaw_deg: float = 0.0                              # nose along world +x
     arm: bool = True                                  # send an arming request before takeoff
+    thrust_unlock: bool = True                        # 3 zero-thrust packets before the climb (hop.py did this)
     estop_repeats: int = 3
+    blind_descent_thrust: tuple = (40000, 34000)  # tracking lost in flight: thrust-only steps (16-bit, hover ~40000)
+    blind_descent_step_s: float = 1.0             # seconds per step, then motors off
+    takeoff_min_rise_frac: float = 0.0           # >0: abort (motors off) if the measured rise after the ramp
+                                                  # is below this fraction of the commanded climb (mission uses 0.4)
 
 
 class Telemetry:
@@ -339,8 +344,8 @@ class Flight:
                     self._lost_since = now
                 elif now - self._lost_since >= self.cfg.tracking_lost_land_s:
                     self._lost_since = None
-                    self.land()
-                    raise FlightAborted(f"tracking lost > {self.cfg.tracking_lost_land_s} s")
+                    self.blind_descent()
+                    raise FlightAborted(f"tracking lost > {self.cfg.tracking_lost_land_s} s: blind descent, motors off")
 
     def _clamp(self, x: float, y: float, z: float, floor_ok: bool) -> tuple[float, float, float]:
         box = self.cfg.geofence
@@ -367,6 +372,14 @@ class Flight:
             if nxt > now:
                 self.sleep(nxt - now)
 
+    def _measured_height(self) -> Optional[float]:
+        """Height from the tracker when it has a fix, else from the drone's own estimate."""
+        if self.tracker is not None:
+            st = self.tracker.get_state()
+            if st is not None and st.tracking_ok and st.xyz is not None:
+                return float(st.xyz[2])
+        return float(self.telemetry.position[2])
+
     def _start_position(self) -> tuple[float, float, float]:
         if self.tracker is not None:
             st = self.tracker.get_state()
@@ -382,12 +395,22 @@ class Flight:
         self.last_abort_reason = ""
         if self.cfg.arm:
             self.cf.platform.send_arming_request(True)
+        if self.cfg.thrust_unlock:
+            for _ in range(3):
+                self.cf.commander.send_setpoint(0, 0, 0, 0)
         self._set_state("takeoff")
         zs = ramp(max(0.0, z0), self.cfg.takeoff_height, self.cfg.takeoff_time_s, self.cfg.setpoint_hz)
         hz = self.cfg.setpoint_hz
         try:
             self._stream(lambda t: (x, y, zs[min(int(round(t * hz)), len(zs) - 1)]), self.cfg.takeoff_time_s,
                          floor_ok=True)
+            if self.cfg.takeoff_min_rise_frac > 0:
+                z_now = self._measured_height()
+                climb = self.cfg.takeoff_height - max(0.0, z0)
+                if z_now is not None and (z_now - max(0.0, z0)) < self.cfg.takeoff_min_rise_frac * climb:
+                    self.soft_stop()
+                    raise FlightAborted(f"takeoff did not lift (measured z {z_now:.2f} m after the ramp to "
+                                        f"{self.cfg.takeoff_height:.2f} m): motors off")
             self._set_state("hover")
             self._stream(lambda t: (x, y, self.cfg.takeoff_height), self.cfg.hover_time_s, floor_ok=True)
             return True
@@ -446,6 +469,49 @@ class Flight:
         self.cf.commander.send_stop_setpoint()
         self._last_target = None
         self._set_state("idle")
+
+    def blind_descent(self) -> None:
+        """Tracking is gone, so the position estimate cannot be trusted: come down on attitude + thrust only.
+
+        Level attitude, thrust a little below hover for cfg.blind_descent_step_s per step, then motors off.
+        Ends in state 'estop' (the drone may not be where we think it is; a clear is required before the
+        next flight). A pending stop request cuts the motors immediately.
+        """
+        self._set_state("landing")
+        cmd = self.cf.commander
+        hz = self.cfg.setpoint_hz
+        dt = 1.0 / hz
+        try:
+            cmd.send_setpoint(0.0, 0.0, 0.0, 0)          # thrust unlock (one zero-thrust packet)
+            for thrust in self.cfg.blind_descent_thrust:
+                for _ in range(max(1, int(round(self.cfg.blind_descent_step_s * hz)))):
+                    if self._stop_requested.is_set():
+                        self.emergency_stop()
+                        return
+                    cmd.send_setpoint(0.0, 0.0, 0.0, int(thrust))
+                    self.sleep(dt)
+            cmd.send_setpoint(0.0, 0.0, 0.0, 0)
+        except Exception:  # noqa: BLE001
+            log.exception("blind descent failed; emergency stop")
+            self.emergency_stop()
+            return
+        cmd.send_stop_setpoint()
+        self._last_target = None
+        self._set_state("estop")
+
+    def soft_stop(self) -> None:
+        """Motors off with stop setpoints only (no supervisor lock): the drone stays armable without a reboot.
+
+        Used when the drone is on the ground anyway (take-off did not lift). Ends in 'estop' so a clear is
+        required before the next attempt.
+        """
+        for _ in range(self.cfg.estop_repeats):
+            try:
+                self.cf.commander.send_stop_setpoint()
+            except Exception:  # noqa: BLE001
+                log.exception("send_stop_setpoint failed")
+        self._last_target = None
+        self._set_state("estop")
 
     def emergency_stop(self) -> None:
         """Motors off NOW. Fire-and-forget, repeated cfg.estop_repeats times."""
@@ -516,6 +582,9 @@ class FakeCrazyflie:
         def send_notify_setpoint_stop(self, remain_valid_milliseconds=0):
             self.notify_stops += 1
 
+        def send_setpoint(self, roll, pitch, yawrate, thrust):
+            self.rpyt_n = getattr(self, "rpyt_n", 0) + 1
+
     class _Any:
         """Any attribute not set explicitly is a no-op method."""
 
@@ -567,7 +636,7 @@ def connect(uri: Optional[str] = None, rw_cache: str = "cache", timeout_s: float
     try:
         import ble_link
         ble_link.register()
-        ble_link.configure(pump_hz=config.BLE_PUMP_HZ)
+        ble_link.configure(pump_hz=config.BLE_PUMP_HZ, stream_ports=tuple(config.BLE_STREAM_PORTS))
         ble_link.BleDriver.fast_interval = bool(config.BLE_FAST_INTERVAL)
     except ImportError:
         log.warning("ble_link not available; only built-in cflib drivers")

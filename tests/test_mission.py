@@ -60,7 +60,7 @@ class MovingTracker:
         if self.moving:
             self.pos[0] += self.step
         p = tuple(float(v) for v in self.pos)
-        return State(t=self.clock(), xyz=p, yaw=0.0, tracking_ok=self.tracking_ok,
+        return State(t=self.clock(), xyz=p, yaw=getattr(self, 'yaw_value', 0.0), tracking_ok=self.tracking_ok,
                      wand_xyz=(p[0], p[1], p[2] + 0.6), wand_ok=self.wand_ok)
 
 
@@ -213,6 +213,15 @@ class PreflightTests(unittest.TestCase):
     def test_low_battery_refuses(self):
         m, _, _ = make_pre(sup=FakeSupervisor(vbat=3.6))
         self.assertTrue(preflight(m).startswith("battery"))
+
+    def test_preflight_logs_the_supervisor_line(self):
+        m, _, _ = make_pre(sup=FakeSupervisor(info=hop.BIT_CAN_BE_ARMED | hop.BIT_CAN_FLY, vbat=4.0))
+        m.bus = StateBus()
+        self.assertIsNone(preflight(m))
+        lines = [l for l in m.bus.snapshot_dict()["log"] if "pre-flight" in l]
+        self.assertEqual(len(lines), 1)
+        self.assertIn("canBeArmed", lines[0])
+        self.assertIn("4.00 V", lines[0])
 
     def test_flights_disabled_by_config(self):
         m, _, _ = make_pre(sup=FakeSupervisor())
@@ -556,6 +565,107 @@ class HoverCommandTests(unittest.TestCase):
         sp = cf.commander.setpoints
         self.assertAlmostEqual(max(p[2] for p in sp), 0.8, places=6)
         self.assertAlmostEqual(len(sp), 20 + 10 + 20 + 20, delta=3)
+
+
+class _View:
+    def __init__(self, frame, markers=None):
+        self.index = 1
+        self.frame = frame
+        self.t = 0.0
+        self.detections = {}
+        self.fps = 30.0
+        self.markers = markers or {}
+        self.poses = {}
+
+
+class _ViewTracker:
+    def __init__(self, view):
+        self._view = view
+
+    def get_views(self):
+        return [self._view]
+
+    def get_state(self):
+        return None
+
+
+class CameraSnapshotTests(unittest.TestCase):
+    def test_snapshot_is_a_jpeg_with_markers_drawn(self):
+        from mission import camera_snapshot_jpeg
+        frame = np.zeros((90, 160, 3), dtype=np.uint8)
+        corners = np.array([[40, 30], [80, 30], [80, 70], [40, 70]], dtype=np.float32)
+        data = camera_snapshot_jpeg(_ViewTracker(_View(frame, {0: corners})), label="id0 seen")
+        self.assertIsInstance(data, bytes)
+        self.assertEqual(data[:2], b"\xff\xd8")                      # JPEG magic
+        self.assertTrue(np.all(frame == 0))                            # the tracker's frame is not modified
+
+    def test_snapshot_without_a_frame_is_none(self):
+        from mission import camera_snapshot_jpeg
+        self.assertIsNone(camera_snapshot_jpeg(_ViewTracker(None)))
+        self.assertIsNone(camera_snapshot_jpeg(object()))              # tracker without get_views (SimTracker)
+
+
+class NanTrackerTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_nan_position_counts_as_not_tracked_and_nan_yaw_becomes_zero(self):
+        import json
+        m, cf, bus, q, store, clock, tr = make_mission(self.tmp.name)
+        tr.pos[:] = (float("nan"), 0.0, 0.3)
+        m.publish()
+        s = bus.snapshot_dict()
+        json.dumps(s, allow_nan=False)
+        self.assertFalse(s["tracking"]["ok"])
+        self.assertAlmostEqual(s["drone"]["z"], 0.3)             # falls back to the estimate
+        tr.pos[:] = (0.1, 0.0, 0.3)
+        tr.yaw_value = float("nan")
+        m.publish()
+        s = bus.snapshot_dict()
+        json.dumps(s, allow_nan=False)
+        self.assertTrue(s["tracking"]["ok"])
+        self.assertEqual(s["drone"]["yaw"], 0.0)
+
+
+class TelemetryDictTests(unittest.TestCase):
+    def test_telemetry_dict_reports_estimator_numbers(self):
+        import json
+        from mission import telemetry_dict
+        m, cf, bus, q, store, clock, tr = make_mission(self.tmp.name)
+        d = telemetry_dict(m)
+        json.dumps(d, allow_nan=False)
+        self.assertTrue(d["converged"])
+        self.assertEqual(d["position"], [0.0, 0.0, 0.3])
+        self.assertEqual(len(d["var"]), 3)
+        self.assertAlmostEqual(d["battery_v"], 3.9)
+        self.assertEqual(d["n_updates"], 12)
+        self.assertEqual(d["flight_state"], "idle")
+        self.assertIn("feed", d)
+        self.assertIn("camera_xyz", d)
+        self.assertIsNone(d["supervisor"])                 # no supervisor watch in sim
+        m.supervisor = FakeSupervisor(info=hop.BIT_CRASHED | hop.BIT_CAN_BE_ARMED, vbat=3.95)
+        d = telemetry_dict(m)
+        self.assertIn("CRASHED", d["supervisor"])
+        self.assertAlmostEqual(d["supervisor_vbat"], 3.95)
+
+    def test_telemetry_dict_with_no_samples(self):
+        import json
+        from mission import telemetry_dict
+        m, cf, bus, q, store, clock, tr = make_mission(self.tmp.name)
+        m.fl.telemetry = flight.Telemetry()
+        d = telemetry_dict(m)
+        json.dumps(d, allow_nan=False)
+        self.assertFalse(d["converged"])
+        self.assertIsNone(d["battery_v"])
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
 
 
 if __name__ == "__main__":

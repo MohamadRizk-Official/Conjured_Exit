@@ -47,8 +47,10 @@ class PositionFeed:
         self.max_age_s = max_age_s
         self.clock = clock
         self.sleep = sleep
+        self.max_abs_m = 10.0          # anything farther than this from the origin is garbage
         self.sent = 0
         self.skipped = 0
+        self.rejected = 0
         self.errors = 0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -60,6 +62,13 @@ class PositionFeed:
             self.skipped += 1
             return False
         x, y, z = (float(v) for v in st.xyz)
+        if not all(math.isfinite(v) and abs(v) <= self.max_abs_m for v in (x, y, z)):
+            # a NaN/inf/absurd position would corrupt the drone's Kalman filter instantly: never send it
+            self.skipped += 1
+            self.rejected += 1
+            if self.rejected == 1 or self.rejected % 100 == 0:
+                log.warning("extpos rejected (non-finite or > %.0f m): %r (total %d)", self.max_abs_m, st.xyz, self.rejected)
+            return False
         try:
             if self.use_yaw and st.yaw is not None:
                 qx, qy, qz, qw = yaw_to_quaternion(float(st.yaw))
@@ -99,4 +108,4 @@ class PositionFeed:
             self._thread = None
 
     def status(self) -> str:
-        return f"extpos sent {self.sent} skipped {self.skipped} errors {self.errors}"
+        return f"extpos sent {self.sent} skipped {self.skipped} rejected {self.rejected} errors {self.errors}"

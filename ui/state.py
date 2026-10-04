@@ -61,6 +61,7 @@ action, and everything flies through the geofence + safety layer.
 from __future__ import annotations
 
 import asyncio
+import math
 import copy
 import queue
 import threading
@@ -241,7 +242,10 @@ class AppState:
 
 
 def _plain(obj: Any) -> Any:
-    """Recursively coerce numpy scalars/arrays and tuples to JSON types."""
+    """Recursively coerce numpy scalars/arrays and tuples to JSON types; NaN/inf floats become 0.0
+    (JSON has no NaN, and one NaN from a tracker would otherwise break every state request)."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else 0.0
     if isinstance(obj, dict):
         return {str(k): _plain(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
@@ -250,7 +254,7 @@ def _plain(obj: Any) -> Any:
         return _plain(obj.tolist())
     if hasattr(obj, "item") and not isinstance(obj, (str, bytes)):
         try:
-            return obj.item()
+            return _plain(obj.item())
         except (TypeError, ValueError):
             return obj
     return obj

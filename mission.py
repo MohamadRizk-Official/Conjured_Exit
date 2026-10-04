@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -51,6 +52,16 @@ class MissionConfig:
     converge_retry_s: float = 5.0          # one estimator reset + wait when the estimate disagrees
     feed_status_every_s: float = 10.0      # log feed.status() this often
     allow_flights: bool = True             # False: real link + fake tracker -> arming never flies
+
+
+def _finite3(xyz) -> bool:
+    """True when xyz is a 3-vector of finite numbers (a NaN from the tracker must count as 'lost')."""
+    if xyz is None:
+        return False
+    try:
+        return len(xyz) == 3 and all(math.isfinite(float(v)) for v in xyz)
+    except (TypeError, ValueError):
+        return False
 
 
 def exit_letter(path_name: str) -> Optional[str]:
@@ -193,6 +204,11 @@ def preflight(m) -> Optional[str]:
             hop.crash_recovery_request(m.cf)
             m.sleep(1.0)
             info = sup.info
+        bus = getattr(m, "bus", None)
+        if bus is not None:
+            vb = sup.vbat if sup.vbat is not None else fl.telemetry.battery_v
+            bus.log(f"pre-flight: bat {'?' if vb is None else f'{vb:.2f} V'}  supervisor["
+                    f"{'?' if info is None else hop.decode_info(info)}]")
         if info is not None and info & (hop.BIT_CRASHED | hop.BIT_IS_LOCKED | hop.BIT_IS_TUMBLED):
             return f"supervisor: {hop.decode_info(info)}"
         vbat = sup.vbat if sup.vbat is not None else fl.telemetry.battery_v
@@ -676,14 +692,14 @@ class Mission:
     def publish(self) -> None:
         st = self.tracker.get_state()
         fl, tel = self.fl, self.fl.telemetry
-        ok = st is not None and bool(st.tracking_ok) and st.xyz is not None
+        ok = st is not None and bool(st.tracking_ok) and _finite3(getattr(st, "xyz", None))
         if ok:
             x, y, z = (float(v) for v in st.xyz)
-            yaw = float(st.yaw) if getattr(st, "yaw", None) is not None else 0.0
+            yaw = float(st.yaw) if getattr(st, "yaw", None) is not None and math.isfinite(float(st.yaw)) else 0.0
         else:
             x, y, z = tel.position
             yaw = 0.0
-        wand_ok = st is not None and bool(getattr(st, "wand_ok", False)) and getattr(st, "wand_xyz", None) is not None
+        wand_ok = st is not None and bool(getattr(st, "wand_ok", False)) and _finite3(getattr(st, "wand_xyz", None))
         wand = {"x": float(st.wand_xyz[0]), "y": float(st.wand_xyz[1]), "z": float(st.wand_xyz[2]), "ok": True} if wand_ok else {"ok": False}
         with self._lock:
             rp, armed, mode, active = self._replay, self.armed, self.mode, self.active_path
@@ -712,6 +728,111 @@ class Mission:
         if now - self._last_feed_log >= self.cfg.feed_status_every_s:
             self._last_feed_log = now
             self.bus.log(self.feed.status())
+
+
+# ---------------------------------------------------------------------- camera view
+
+_CAMERA_HTML = """<!doctype html><html><head><meta charset="utf-8"><title>Pathcaster camera</title>
+<style>body{margin:0;background:#111;color:#eee;font:14px system-ui}img{width:100%;max-width:1280px;display:block}
+p{margin:6px 10px}a{color:#8cf}</style></head><body>
+<p>Live camera, 2 frames/s. Green outlines = ArUco markers the tracker sees. <a href="/">back to the dashboard</a></p>
+<img id="cam" src="/api/camera.jpg" alt="camera">
+<script>setInterval(function(){document.getElementById('cam').src='/api/camera.jpg?t='+Date.now();},500);</script>
+</body></html>"""
+
+
+def camera_snapshot_jpeg(tracker, label: str = "") -> Optional[bytes]:
+    """The tracker's latest camera frame with its ArUco detections drawn, as JPEG bytes.
+
+    None when the tracker has no frames (SimTracker, camera not open yet). Never modifies the tracker's frame.
+    """
+    get_views = getattr(tracker, "get_views", None)
+    if not callable(get_views):
+        return None
+    try:
+        views = get_views()
+    except Exception:  # noqa: BLE001
+        return None
+    view = next((v for v in (views or []) if v is not None and getattr(v, "frame", None) is not None), None)
+    if view is None:
+        return None
+    import cv2  # lazy: mission.py must import without OpenCV (tests, --sim)
+
+    img = view.frame.copy()
+    for mid, corners in (getattr(view, "markers", None) or {}).items():
+        pts = np.asarray(corners, dtype=np.int32).reshape(-1, 1, 2)
+        cv2.polylines(img, [pts], True, (0, 255, 0), 2)
+        c0 = pts.reshape(-1, 2)[0]
+        cv2.putText(img, f"id{mid}", (int(c0[0]), max(12, int(c0[1]) - 6)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv2.LINE_AA)
+    if label:
+        cv2.putText(img, label, (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 255), 2, cv2.LINE_AA)
+    ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 75])
+    return buf.tobytes() if ok else None
+
+
+def telemetry_dict(m) -> dict:
+    """The drone's own estimator numbers plus the camera's view of it (GET /api/telemetry; troubleshooting)."""
+    tel = m.fl.telemetry
+    try:
+        st = m.tracker.get_state()
+    except Exception:  # noqa: BLE001
+        st = None
+    cam = [float(v) for v in st.xyz] if (st is not None and _finite3(getattr(st, "xyz", None))) else None
+    pos = [float(v) if math.isfinite(float(v)) else 0.0 for v in tel.position]
+    var = [float(v) if math.isfinite(float(v)) else None for v in tel.var]
+    bat = tel.battery_v
+    return {
+        "converged": bool(tel.converged),
+        "position": pos,
+        "var": var,
+        "battery_v": float(bat) if bat is not None else None,
+        "n_updates": int(tel.n_updates),
+        "timestamp_ms": tel.timestamp_ms,
+        "flight_state": m.fl.state,
+        "armed": bool(m.armed),
+        "link_lost": bool(m.link_lost),
+        "feed": m.feed.status(),
+        "camera_xyz": cam,
+        "camera_vs_estimate_m": (max(abs(pos[i] - cam[i]) for i in range(3)) if cam else None),
+        "tracking_ok": bool(st is not None and getattr(st, "tracking_ok", False)),
+        "supervisor": (hop.decode_info(int(m.supervisor.info)) if (getattr(m, "supervisor", None) is not None
+                                                                    and m.supervisor.info is not None) else None),
+        "supervisor_vbat": (float(m.supervisor.vbat) if (getattr(m, "supervisor", None) is not None
+                                                          and m.supervisor.vbat is not None) else None),
+    }
+
+
+def add_camera_routes(app, tracker, mission: "Mission | None" = None) -> None:
+    """GET /api/camera.jpg (latest annotated frame) and GET /camera (auto-refreshing page)."""
+    from fastapi import Response
+    from fastapi.responses import HTMLResponse
+
+    @app.get("/api/camera.jpg", include_in_schema=False)
+    def camera_jpg():
+        label = ""
+        if mission is not None:
+            try:
+                st = tracker.get_state() if hasattr(tracker, "get_state") else None
+            except Exception:  # noqa: BLE001
+                st = None
+            ok = bool(st is not None and getattr(st, "tracking_ok", False))
+            label = f"tracking {'OK' if ok else 'not locked'} | flight {mission.fl.state} | {'ARMED' if mission.armed else 'disarmed'}"
+        data = camera_snapshot_jpeg(tracker, label)
+        if data is None:
+            return Response(status_code=503, content=b"no camera frame", media_type="text/plain")
+        return Response(content=data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+    @app.get("/camera", include_in_schema=False)
+    def camera_page():
+        return HTMLResponse(_CAMERA_HTML)
+
+    @app.get("/api/telemetry", include_in_schema=False)
+    def telemetry():
+        from fastapi.responses import JSONResponse
+
+        if mission is None:
+            return JSONResponse({"error": "no mission"}, status_code=404)
+        return JSONResponse(telemetry_dict(mission))
 
 
 def _make_tracker(kind: str, camera: Optional[int]):
@@ -743,7 +864,8 @@ def main(argv: list[str] | None = None) -> int:
         store = PathStore(args.paths_dir, demo=True)
         cf = mission_sim.SimDrone()
         tracker = mission_sim.SimDroneTracker(cf)
-        mission = Mission(cf, tracker, store, cfg=cfg, sim=True)
+        mission = Mission(cf, tracker, store, cfg=cfg, sim=True,
+                          flight_cfg=flight.FlightConfig(takeoff_time_s=3.0, takeoff_min_rise_frac=0.4))
         feeder = mission_sim.SimTelemetry(mission.fl, cf).start()
         print("[mission] SIM: fake drone, demo paths (exit_a, exit_b, spiral, square)")
     else:
@@ -754,7 +876,8 @@ def main(argv: list[str] | None = None) -> int:
         uri = args.uri or config.LINK_URI
         print(f"[mission] connecting to {uri} (about 50 s over BLE) ...")
         cf = flight.connect(uri)
-        mission = Mission(cf, tracker, store, cfg=cfg, flight_cfg=flight.FlightConfig(link_uri=uri),
+        mission = Mission(cf, tracker, store, cfg=cfg,
+                          flight_cfg=flight.FlightConfig(link_uri=uri, takeoff_time_s=3.0, takeoff_min_rise_frac=0.4),
                           supervisor=hover.SupervisorWatch(cf))
         print(f"[mission] connected; tracker={args.tracker}; paths: {', '.join(store.names()) or 'none yet'}")
 
@@ -762,9 +885,10 @@ def main(argv: list[str] | None = None) -> int:
         from ui.server import SourceManager, create_app, run_server
 
         app = create_app(mission.bus, mission.commands, store, manager=SourceManager(mission.bus, mission.commands))
+        add_camera_routes(app, tracker, mission)
         threading.Thread(target=run_server, args=(app,), kwargs={"host": args.host, "port": args.port, "log_level": "warning"},
                          name="mission-ui", daemon=True).start()
-        print(f"[mission] UI: http://{args.host}:{args.port}/")
+        print(f"[mission] UI: http://{args.host}:{args.port}/   camera view: http://{args.host}:{args.port}/camera")
 
     mission.start()
     print("[mission] ready: ARM on the page, then ALARM or Cast. Ctrl-C to quit.")
