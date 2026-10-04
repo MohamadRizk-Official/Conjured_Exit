@@ -50,8 +50,11 @@ WAYPOINT_DT_S = 0.4             # one go_to roughly every 0.3-0.5 s
 TAKEOFF_HEIGHT_M = 0.5
 
 # Geofence: the volume both cameras see. paths.py exposes the same box as GEOFENCE.
-GEOFENCE_X = (-0.75, 0.75)
-GEOFENCE_Y = (-0.75, 0.75)
+# 2026-10-04 06:35 hand-carry to the exit: the single camera tracked the marker out to x 5.0 m / y -1.9 m
+# at 0.6 m (camera 2.5 m behind the sheet, 1.5 m up, 25 deg down). The box is that corridor plus margin;
+# the flight itself is bounded by marker visibility (0.8 s loss -> down), not by this box.
+GEOFENCE_X = (-0.75, 5.5)
+GEOFENCE_Y = (-2.5, 0.75)
 GEOFENCE_Z = (0.2, 1.2)
 
 # Data directories

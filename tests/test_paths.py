@@ -51,18 +51,21 @@ def rms(a: np.ndarray, b: np.ndarray) -> float:
 
 class TestBox(unittest.TestCase):
     def test_geofence_dimensions(self) -> None:
-        np.testing.assert_allclose(GEOFENCE.size, [1.5, 1.5, 1.0])
-        self.assertEqual(GEOFENCE.zmin, 0.2)
-        self.assertEqual(GEOFENCE.zmax, 1.2)
+        import config
+        np.testing.assert_allclose(GEOFENCE.size, [config.GEOFENCE_X[1] - config.GEOFENCE_X[0],
+                                                  config.GEOFENCE_Y[1] - config.GEOFENCE_Y[0],
+                                                  config.GEOFENCE_Z[1] - config.GEOFENCE_Z[0]])
+        self.assertEqual(GEOFENCE.zmin, config.GEOFENCE_Z[0])
+        self.assertEqual(GEOFENCE.zmax, config.GEOFENCE_Z[1])
 
     def test_contains_and_clamp(self) -> None:
-        inside = np.array([[0.0, 0.0, 0.5], [0.75, -0.75, 1.2]])
-        outside = np.array([[0.0, 0.0, 0.5], [0.8, 0.0, 0.5]])
+        inside = np.array([[0.0, 0.0, 0.5], [GEOFENCE.xmax, GEOFENCE.ymin, GEOFENCE.zmax]])
+        outside = np.array([[0.0, 0.0, 0.5], [GEOFENCE.xmax + 0.05, 0.0, 0.5]])
         self.assertTrue(GEOFENCE.contains(inside))
         self.assertFalse(GEOFENCE.contains(outside))
         self.assertTrue(GEOFENCE.contains([0.1, 0.1, 0.3]))
         np.testing.assert_array_equal(GEOFENCE.inside(outside), [True, False])
-        np.testing.assert_allclose(GEOFENCE.clamp([2.0, -2.0, 0.0]), [0.75, -0.75, 0.2])
+        np.testing.assert_allclose(GEOFENCE.clamp([20.0, -20.0, 0.0]), [GEOFENCE.xmax, GEOFENCE.ymin, GEOFENCE.zmin])
         clamped = GEOFENCE.clamp(outside)
         self.assertEqual(clamped.shape, (2, 3))
         self.assertTrue(GEOFENCE.contains(clamped))
@@ -176,7 +179,8 @@ class TestResample(unittest.TestCase):
 class TestFitToBox(unittest.TestCase):
     def test_wide_path_is_scaled_uniformly_into_shrunk_box(self) -> None:
         u = np.linspace(0.0, 1.0, 200)
-        wide = np.column_stack([-1.5 + 3.0 * u, 0.5 * np.sin(2 * np.pi * u), 0.7 + 0.2 * np.cos(4 * np.pi * u)])
+        span = 4.0 * GEOFENCE.size[0]                      # much wider than the box in x
+        wide = np.column_stack([-span / 2 + span * u, 0.5 * np.sin(2 * np.pi * u), 0.7 + 0.2 * np.cos(4 * np.pi * u)])
         fitted, scale, offset = fit_to_box(wide, box=GEOFENCE, margin=0.05)
         inner = GEOFENCE.shrink(0.05)
         self.assertTrue(inner.contains(fitted))
@@ -197,17 +201,18 @@ class TestFitToBox(unittest.TestCase):
         np.testing.assert_allclose(fitted, small)
 
     def test_small_path_outside_is_only_translated(self) -> None:
-        small = np.column_stack([np.linspace(1.0, 1.3, 30), np.zeros(30), np.full(30, 1.6)])
+        x0 = GEOFENCE.xmax + 0.25
+        small = np.column_stack([np.linspace(x0, x0 + 0.3, 30), np.zeros(30), np.full(30, GEOFENCE.zmax + 0.4)])
         fitted, scale, offset = fit_to_box(small, margin=0.05)
         self.assertEqual(scale, 1.0)
         self.assertTrue(GEOFENCE.shrink(0.05).contains(fitted))
         np.testing.assert_allclose(fitted - small, np.tile(offset, (30, 1)), atol=1e-12)
-        self.assertAlmostEqual(fitted[:, 0].max(), 0.7)      # pushed just inside +x
-        self.assertAlmostEqual(fitted[:, 2].max(), 1.15)     # pushed just below the ceiling
+        self.assertAlmostEqual(fitted[:, 0].max(), GEOFENCE.xmax - 0.05)   # pushed just inside +x
+        self.assertAlmostEqual(fitted[:, 2].max(), GEOFENCE.zmax - 0.05)   # pushed just below the ceiling
         self.assertEqual(offset[1], 0.0)                     # y already fit: untouched
 
     def test_non_uniform_scaling_option(self) -> None:
-        wide = np.column_stack([np.linspace(-2, 2, 50), np.linspace(-0.1, 0.1, 50), np.full(50, 0.7)])
+        wide = np.column_stack([np.linspace(-20, 20, 50), np.linspace(-0.1, 0.1, 50), np.full(50, 0.7)])
         fitted, scale, _ = fit_to_box(wide, preserve_aspect=False)
         self.assertEqual(np.shape(scale), (3,))
         self.assertTrue(GEOFENCE.shrink(0.05).contains(fitted))
@@ -215,9 +220,9 @@ class TestFitToBox(unittest.TestCase):
         self.assertEqual(scale[1], 1.0)
 
     def test_clamp_to_box(self) -> None:
-        pts = np.array([[5.0, -5.0, 9.0], [0.0, 0.0, 0.0], [0.1, 0.1, 0.5]])
+        pts = np.array([[50.0, -50.0, 9.0], [0.0, 0.0, 0.0], [0.1, 0.1, 0.5]])
         out = clamp_to_box(pts)
-        np.testing.assert_allclose(out[0], [0.75, -0.75, 1.2])
+        np.testing.assert_allclose(out[0], [GEOFENCE.xmax, GEOFENCE.ymin, GEOFENCE.zmax])
         np.testing.assert_allclose(out[1], [0.0, 0.0, 0.2])
         np.testing.assert_allclose(out[2], pts[2])
 

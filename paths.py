@@ -45,6 +45,8 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Sequence
 
 import numpy as np
+
+import config
 from numpy.typing import ArrayLike, NDArray
 from scipy.signal import savgol_filter
 
@@ -151,7 +153,9 @@ class Box:
 
 
 #: Volume both cameras see: 1.5 m square footprint, 0.2 m to 1.2 m up (README.md, Flight).
-GEOFENCE: Box = Box(xmin=-0.75, xmax=0.75, ymin=-0.75, ymax=0.75, zmin=0.2, zmax=1.2)
+GEOFENCE: Box = Box(xmin=config.GEOFENCE_X[0], xmax=config.GEOFENCE_X[1],
+                    ymin=config.GEOFENCE_Y[0], ymax=config.GEOFENCE_Y[1],
+                    zmin=config.GEOFENCE_Z[0], zmax=config.GEOFENCE_Z[1])   # single source: config.py
 
 
 # ---------------------------------------------------------------------- helpers

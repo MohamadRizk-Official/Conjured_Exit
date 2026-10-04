@@ -256,7 +256,7 @@ class FlyPathTests(unittest.TestCase):
 
     def test_flight_targets_outside_geofence_are_clamped(self):
         wild = paths.Path(name="wild", mode="spell",
-                          points=np.array([[0.0, 0.0, 0.7], [3.0, -3.0, 2.5]]), times=np.array([0.0, 1.0]), meta={})
+                          points=np.array([[0.0, 0.0, 0.7], [30.0, -30.0, 2.5]]), times=np.array([0.0, 1.0]), meta={})
         self.fl.takeoff()
         self.fl.fly_path(wild, land=False)
         sp = np.array([p[:3] for p in self.cf.commander.setpoints])
