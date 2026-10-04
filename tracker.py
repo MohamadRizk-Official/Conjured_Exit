@@ -652,43 +652,76 @@ class FrameSource(threading.Thread):
 
 
 class CameraThread(FrameSource):
-    """Daemon capture thread for one webcam; keeps only the newest frame."""
+    """Daemon capture thread for one webcam; keeps only the newest frame.
+
+    Survives a webcam that drops off USB (three times on 2026-10-04, laptop on battery): when the
+    device does not open, or stops delivering frames for ``fail_limit`` reads, the capture is
+    released and reopened every ``reopen_s``. ``is_open`` is False in between (the tracker then
+    reports 2d-only and tracking_ok stays False) and True again as soon as frames resume.
+    """
 
     def __init__(self, index: int, backend: int = cv2.CAP_DSHOW, width: int = 640, height: int = 480,
-                 fps: int = 30) -> None:
+                 fps: int = 30, fail_limit: int = 90, reopen_s: float = 2.0) -> None:
         super().__init__(index, name=f"cam{index}")
         self.backend = backend
         self.width, self.height, self.req_fps = width, height, fps
+        self.fail_limit = int(fail_limit)
+        self.reopen_s = float(reopen_s)
+        self.reopens = 0
         self.actual_size: tuple[int, int] | None = None
         self.backend_name = next((k for k, v in BACKENDS.items() if v == backend), str(backend))
 
-    def run(self) -> None:  # noqa: C901 - one linear loop
-        cap: cv2.VideoCapture | None = None
+    def _open(self):
+        cap = cv2.VideoCapture(self.index, self.backend)
+        if not cap.isOpened():
+            cap.release()
+            return None
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+        if self.req_fps:
+            cap.set(cv2.CAP_PROP_FPS, self.req_fps)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # ignored by DSHOW, honoured by some backends
+        self.actual_size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+        return cap
+
+    def run(self) -> None:  # noqa: C901 - one loop with a reopen path
+        cap = None
         try:
-            cap = cv2.VideoCapture(self.index, self.backend)
-            if not cap.isOpened():
-                self.error = f"camera {self.index} did not open (backend {self.backend_name})"
-                return
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-            if self.req_fps:
-                cap.set(cv2.CAP_PROP_FPS, self.req_fps)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # ignored by DSHOW, honoured by some backends
-            self.actual_size = (int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)))
-            self._mark_open()
-            fails = 0
             while not self._stop_evt.is_set():
-                ok, frame = cap.read()
-                t = time.perf_counter()
-                if not ok or frame is None:
-                    fails += 1
-                    if fails >= 90:
-                        self.error = f"camera {self.index} stopped delivering frames"
+                cap = self._open()
+                if cap is None:
+                    self.error = f"camera {self.index} did not open (backend {self.backend_name})"
+                    self._opened.clear()
+                    self._ready.set()                 # wait_open() returns False at once
+                    if self._stop_evt.wait(self.reopen_s):
                         break
-                    time.sleep(0.01)
                     continue
+                if self._opened.is_set() or self.reopens or self.error:
+                    log.info("camera %d reopened (%dx%d)", self.index, *self.actual_size)
+                self.error = None
+                self._mark_open()
                 fails = 0
-                self._publish(frame, t)
+                while not self._stop_evt.is_set():
+                    ok, frame = cap.read()
+                    t = time.perf_counter()
+                    if not ok or frame is None:
+                        fails += 1
+                        if fails >= self.fail_limit:
+                            self.error = f"camera {self.index} stopped delivering frames; reopening"
+                            break
+                        time.sleep(0.01)
+                        continue
+                    fails = 0
+                    self._publish(frame, t)
+                cap.release()
+                cap = None
+                if self._stop_evt.is_set():
+                    break
+                self._opened.clear()                  # is_open False until the reopen succeeds
+                self.reopens += 1
+                log.warning("camera %d lost (%s); reopening every %.1f s", self.index, self.error, self.reopen_s)
+                if self._stop_evt.wait(self.reopen_s):
+                    break
         except Exception as exc:  # pragma: no cover - hardware path
             self.error = f"camera {self.index}: {exc!r}"
         finally:
